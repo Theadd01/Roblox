@@ -159,18 +159,7 @@ end
 -- choisis (Config/Military.generals). Effets : attack, defense, speed, morale, recovery,
 -- experience, upkeep, Blindes, Artillerie, rough, encirclement.
 function Armies.generalBonus(general: Instance, effect: string): number
-	local G = Military.generals
-	local total = GeneralTraits.bonus(general, effect)
-	local level = Armies.levelOf(general)
-	local perLevel = G.levelBonus[effect]
-	if perLevel then
-		total += perLevel * (level - 1)
-	end
-	local choice = G.choices[effect]
-	if choice then
-		total += choice.value * ((general:GetAttribute("Bonus_" .. effect) :: number?) or 0)
-	end
-	return math.min(G.maxBonus, total)
+	return GeneralTraits.total(general, effect)
 end
 
 -- Le général d'une division, s'il peut donner ses bonus (ni désorganisé, ni blessé)

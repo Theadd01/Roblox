@@ -14,7 +14,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = Shared:WaitForChild("Config")
 local Regions = require(Config:WaitForChild("Regions")) :: any
 local Countries = require(Config:WaitForChild("Countries")) :: any
-local MilitaryConfig = require(Config:WaitForChild("Military")) :: any
+local TechState = require(Shared:WaitForChild("TechState")) :: any
 local DiplomacyState = require(Shared:WaitForChild("DiplomacyState")) :: any
 local CouncilState = require(Shared:WaitForChild("CouncilState")) :: any
 local FrenchNames = require(Shared:WaitForChild("FrenchNames")) :: any
@@ -132,7 +132,7 @@ function OrderInput.evaluate(regionId: string): Verdict?
 		end
 	end
 	for _, d in MilitaryState.list() do
-		if d:GetAttribute("Destination") == regionId then
+		if d:GetAttribute("Destination") == regionId and not MilitaryState.isAbsorbed(d) then
 			occupancy += 1
 		end
 	end
@@ -143,15 +143,16 @@ function OrderInput.evaluate(regionId: string): Verdict?
 			coming += 1
 		end
 	end
-	if coming > 0 and occupancy >= MilitaryConfig.maxDivisionsPerRegion then
-		return { kind = "Impossible", text = `Région pleine ({MilitaryConfig.maxDivisionsPerRegion} divisions au maximum)` }
-	end
 	local owner = RegionView.getOwner(regionId)
+	local capacity = TechState.stationingCap(owner or me)
+	if coming > 0 and occupancy >= capacity then
+		return { kind = "Impossible", text = `Région pleine ({capacity} divisions au maximum)` }
+	end
 	local hostile = owner ~= nil and owner ~= me and not DiplomacyState.areAllies(me, owner)
 	if hostile then
 		if not DiplomacyState.atWar(me, owner) then
 			local country = Countries[owner]
-			return { kind = "Impossible", text = `Pas en guerre avec {if country then FrenchNames.the(country.name) else "ce pays"} (onglet Diplomatie)` }
+			return { kind = "Impossible", text = `Pas en guerre avec {if country then FrenchNames.the(country.name) else "ce pays"} (déclare la guerre depuis la fiche de la région)` }
 		end
 		local ceasefire = CouncilState.ceasefireLeft()
 		if ceasefire > 0 then
@@ -171,7 +172,7 @@ function OrderInput.evaluate(regionId: string): Verdict?
 	end
 	if hostile then
 		local defenders = 0
-		for _, d in MilitaryState.inRegion(regionId) do
+		for _, d in MilitaryState.allInRegion(regionId) do
 			if d:GetAttribute("Proprietaire") == owner then
 				defenders += 1
 			end

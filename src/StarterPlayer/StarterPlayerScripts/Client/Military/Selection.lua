@@ -200,7 +200,7 @@ local function selectInRectangle(a: Vector2, b: Vector2, add: boolean)
 	local minY, maxY = math.min(a.Y, b.Y), math.max(a.Y, b.Y)
 	local camera = workspace.CurrentCamera
 	local list = if add then table.clone(selected) else {}
-	for _, d in MilitaryState.ofCountry(o.myCountry() or "") do
+	for _, d in MilitaryState.ofCountry(o.myCountry() or "", true) do
 		local position = UnitRenderer.positionOf(d)
 		if position then
 			local screen, visible = camera:WorldToScreenPoint(position)

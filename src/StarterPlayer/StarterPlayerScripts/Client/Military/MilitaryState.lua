@@ -3,7 +3,10 @@
 -- par région, par pays ; prévient les abonnés à chaque changement.
 --   onChanged(division, retirée) : un attribut a changé (organisation, déplacement...)
 --   onRegionChanged(région) : une division est arrivée, partie, née ou détruite dans cette région
---     (ou se met en route vers elle) : sa disposition sur la carte est à refaire
+--     (ou se met en route vers elle, ou rejoint l'armée d'un général) : sa disposition sur la carte
+--     est à refaire
+-- Les troupes de l'armée d'un général (attribut Armee) ne sont plus sur la carte : inRegion et
+-- ofCountry(…, true) les écartent ; allInRegion les compte (elles défendent la région).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -66,7 +69,7 @@ function MilitaryState.start()
 		d.AttributeChanged:Connect(function(name: string)
 			if name == "Region" then
 				place(d)
-			elseif name == "Destination" or name == "Entrainement" or name == "Bataille" then
+			elseif name == "Destination" or name == "Entrainement" or name == "Bataille" or name == "Armee" then
 				notifyRegion(d:GetAttribute("Region"))
 				notifyRegion(d:GetAttribute("Destination"))
 			end
@@ -97,18 +100,36 @@ function MilitaryState.list(): { Instance }
 	return if folder then folder:GetChildren() else {}
 end
 
--- Divisions d'une région (dans l'ordre de création)
-function MilitaryState.inRegion(regionId: string): { Instance }
+-- La division fait-elle partie de l'armée d'un général ? (elle n'est plus sur la carte)
+function MilitaryState.isAbsorbed(d: Instance): boolean
+	local general = d:GetAttribute("Armee")
+	return typeof(general) == "string" and general ~= ""
+end
+
+local function listIn(regionId: string, withAbsorbed: boolean): { Instance }
 	local list = {}
-	for d in byRegion[regionId] or {} do
-		if d.Parent then
-			table.insert(list, d)
+	local set = byRegion[regionId]
+	if set then
+		for d in set do
+			if d.Parent and (withAbsorbed or not MilitaryState.isAbsorbed(d)) then
+				table.insert(list, d)
+			end
 		end
 	end
 	table.sort(list, function(a: Instance, b: Instance): boolean
 		return idNumber(a) < idNumber(b)
 	end)
 	return list
+end
+
+-- Divisions d'une région sur la carte (dans l'ordre de création), sans l'armée des généraux
+function MilitaryState.inRegion(regionId: string): { Instance }
+	return listIn(regionId, false)
+end
+
+-- Toutes les divisions d'une région, armées des généraux comprises
+function MilitaryState.allInRegion(regionId: string): { Instance }
+	return listIn(regionId, true)
 end
 
 -- Régions où se trouve au moins une division
@@ -122,10 +143,11 @@ function MilitaryState.regions(): { string }
 	return list
 end
 
-function MilitaryState.ofCountry(countryId: string): { Instance }
+-- Divisions d'un pays ; onMap : seulement celles sur la carte (hors armées des généraux)
+function MilitaryState.ofCountry(countryId: string, onMap: boolean?): { Instance }
 	local list = {}
 	for _, d in MilitaryState.list() do
-		if d:GetAttribute("Proprietaire") == countryId then
+		if d:GetAttribute("Proprietaire") == countryId and not (onMap and MilitaryState.isAbsorbed(d)) then
 			table.insert(list, d)
 		end
 	end

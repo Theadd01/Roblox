@@ -3,7 +3,9 @@
 -- En bas à gauche sur ordinateur, sur toute la largeur sur téléphone.
 -- Une zone « Supplement » en bas de la fiche est remplie par d'autres modules (usines...) ;
 -- d'autres zones peuvent être ajoutées (RegionPanel.addSection : espionnage...).
--- Brouillard de guerre : la défense d'une région hors de vue est inconnue.
+-- Brouillard de guerre : la défense d'une région hors de vue est inconnue. Terrain de la région
+-- (il affaiblit l'attaquant) ; la zone « Guerre » (UI/WarPanel) permet de déclarer la guerre ou
+-- d'attaquer depuis la fiche.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -15,6 +17,8 @@ local Economy = require(Config:WaitForChild("Economy")) :: any
 local Personalities = require(Config:WaitForChild("Personalities")) :: any
 local DiplomacyState = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DiplomacyState")) :: any
 local RegionResources = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("RegionResources")) :: any
+local RegionTerrain = require(Config:WaitForChild("RegionTerrain")) :: any
+local Terrain = require(Config:WaitForChild("Terrain")) :: any
 local RegionView = require(script.Parent.Parent:WaitForChild("Map"):WaitForChild("RegionView"))
 local Fog = require(script.Parent.Parent:WaitForChild("State"):WaitForChild("Fog"))
 local MilitaryState = require(script.Parent.Parent:WaitForChild("Military"):WaitForChild("MilitaryState"))
@@ -193,15 +197,29 @@ local function refresh()
 	end
 	local state = ReplicatedStorage:FindFirstChild("EtatMonde")
 	local regionState = state and state:FindFirstChild("Regions") and state.Regions:FindFirstChild(region.id)
+	-- terrain : il affaiblit l'attaquant (Config/Terrain)
+	local terrain = Terrain.types[RegionTerrain.terrain[region.id] or Terrain.default] or Terrain.types[Terrain.default]
+	rows.Terrain.Text = `<font color="{GREY}">Terrain</font>   {terrain.icon} {terrain.name}`
+		.. (if terrain.attack < 0 then ` <font color="{GREY}">(attaquant {math.floor(terrain.attack * 100 + 0.5)} %)</font>` else "")
 	-- défense : les divisions présentes dans la région (une région sans division est vide)
 	local defenders = MilitaryState.inRegion(region.id)
 	local icons = {}
 	for _, d in defenders do
 		table.insert(icons, MilitaryState.typeOf(d).icon)
 	end
+	-- armées des généraux dans la région (une seule unité chacune, avec son compteur)
+	local armies = {}
+	local generals = state and state:FindFirstChild("Generaux")
+	for _, g in (if generals then generals:GetChildren() else {}) do
+		if g:GetAttribute("Region") == region.id and (g:GetAttribute("Destination") or "") == "" then
+			table.insert(armies, `🎖️ {g:GetAttribute("Nom")} (🪖 {g:GetAttribute("Troupes") or 0})`)
+		end
+	end
 	local fighting = regionState and regionState:GetAttribute("Bataille")
 	if Fog.isRegionVisible(region.id) then
-		rows.Garnison.Text = `<font color="{GREY}">Défense</font>   ` .. (if #defenders > 0 then `{#defenders} division{if #defenders > 1 then "s" else ""}  {table.concat(icons, "")}` else "aucune division")
+		local garrison = if #defenders > 0 then `{#defenders} division{if #defenders > 1 then "s" else ""}  {table.concat(icons, "")}` else "aucune division"
+		rows.Garnison.Text = `<font color="{GREY}">Défense</font>   ` .. garrison
+			.. (if #armies > 0 then " + " .. table.concat(armies, ", ") else "")
 			.. (if fighting then `   <font color="#FF9A78">⚔️ bataille en cours</font>` else "")
 	else
 		rows.Garnison.Text = `<font color="{GREY}">Défense</font>   🌫️ inconnue (brouillard de guerre)`
@@ -289,8 +307,10 @@ function RegionPanel.create(closeCallback: () -> ())
 	rows.Relation = row("Relation", 5, body)
 	rows.Capitale = row("Capitale", 6, body)
 	rows.Production = row("Production", 7, body)
-	rows.Garnison = row("Garnison", 8, body)
-	rows.Voisins = row("Voisins", 9, body)
+	rows.Terrain = row("Terrain", 8, body)
+	rows.Garnison = row("Garnison", 9, body)
+	-- 10 : zone « Guerre » (UI/WarPanel)
+	rows.Voisins = row("Voisins", 11, body)
 
 	local container = Instance.new("Frame")
 	container.Name = "Supplement"

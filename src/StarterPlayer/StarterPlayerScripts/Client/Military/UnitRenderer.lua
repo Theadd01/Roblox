@@ -1,6 +1,8 @@
 --!strict
 -- Divisions sur la carte (SYSTEME_MILITAIRE.md, 7.1) : 1 division = 1 modèle 3D, rangées en
--- formation dans leur région, face à l'ennemi le plus proche (10 au plus par région).
+-- formation dans leur région, face à l'ennemi le plus proche (10 au plus par région, la limite de
+-- stationnement). Les troupes de l'armée d'un général ne sont pas affichées : le général les
+-- représente (GeneralRenderer, une seule unité avec un compteur).
 --   de près : les modèles, avec au-dessus de chacun ses barres d'organisation (verte) et de force
 --     (orange) et l'icône de son type ; ils marchent ou roulent d'une région à l'autre (barre bleue
 --     de progression) ; en bataille, ils font face à l'ennemi (blindés devant en attaque, derrière
@@ -32,7 +34,7 @@ local RegionView = require(Client:WaitForChild("Map"):WaitForChild("RegionView")
 
 local MODEL_DISTANCE = 420 -- au-delà de cette distance de la caméra : étiquette de région, pas de modèles
 local ANIM_DISTANCE = 160 -- au-delà, les modèles ne s'animent pas
-local BAR_DISTANCE = 170 -- barres d'organisation et de force visibles jusqu'à cette distance
+local BAR_DISTANCE = 170 -- barres de moral (organisation) et de PV visibles jusqu'à cette distance
 local FAR_HEIGHT = 300 -- caméra plus haute : seulement les étiquettes de région
 local LABEL_DISTANCE = 1400 -- étiquettes de région visibles jusqu'à cette distance...
 local LABEL_MAX_HEIGHT = 1100 -- ... et seulement sous cette hauteur de caméra (tout en haut : la carte seule)
@@ -597,7 +599,7 @@ local function refresh()
 			state.shown = true
 		else
 			if state.shown then
-				for _, d in MilitaryState.inRegion(regionId) do
+				for _, d in MilitaryState.allInRegion(regionId) do
 					removeView(d)
 				end
 				state.shown = false

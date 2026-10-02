@@ -1,7 +1,8 @@
 --!strict
--- Panneau d'une bataille terrestre (SYSTEME_MILITAIRE.md, 7.3), ouvert en touchant son icône :
--- divisions en ligne et en réserve de chaque camp, organisation de chaque camp, modificateurs
--- actifs (terrain, rivière, retranchement, fortification, ravitaillement), largeur et prévision.
+-- Panneau d'une bataille terrestre (cahier des charges v2, section 2), ouvert en touchant son
+-- icône : soldats au front et en réserve de chaque camp (l'armée d'un général en une ligne), moral
+-- et PV de chaque camp, pertes, modificateurs actifs (terrain, rivière, défenseur, retranchement,
+-- fortification, ravitaillement), front et prévision.
 -- Purement visuel : tout vient de ReplicatedStorage.EtatMonde (Batailles, Divisions, Regions).
 
 local Players = game:GetService("Players")
@@ -13,6 +14,7 @@ local Regions = require(Config:WaitForChild("Regions")) :: any
 local Countries = require(Config:WaitForChild("Countries")) :: any
 local Terrain = require(Config:WaitForChild("Terrain")) :: any
 local MilitaryConfig = require(Config:WaitForChild("Military")) :: any
+local CombatConfig = require(Config:WaitForChild("CombatConfig")) :: any
 local FrenchNames = require(Shared:WaitForChild("FrenchNames")) :: any
 local Client = script.Parent.Parent
 local UIStyle = require(Client:WaitForChild("UI"):WaitForChild("UIStyle"))
@@ -126,7 +128,7 @@ local function bar(parent: Instance, name: string, ratio: number, color: Color3,
 	return back
 end
 
--- Une ligne par division : icône et nom, barres d'organisation et de force, en ligne ou en réserve
+-- Une ligne par division : icône et nom, barres de moral (vert) et de PV (orange), au front ou en réserve
 local function divisionRow(parent: Instance, d: Instance, order: number)
 	local row = Instance.new("Frame")
 	row.Name = d.Name
@@ -147,7 +149,7 @@ local function divisionRow(parent: Instance, d: Instance, order: number)
 	bar(row, "Org", org / orgMax, Color3.fromRGB(110, 210, 110), 5, UDim.new(0.22, 0), UDim2.new(0.53, 0, 0, 7))
 	bar(row, "Force", force / 100, Color3.fromRGB(240, 160, 60), 5, UDim.new(0.22, 0), UDim2.new(0.53, 0, 0, 14))
 	local line = d:GetAttribute("EnLigne") == true
-	local state = UIStyle.text("Etat", if line then "en ligne" else "réserve", 13, UIStyle.FONT, if line then UIStyle.TEXT else UIStyle.TEXT_DIM)
+	local state = UIStyle.text("Etat", if line then "au front" else "réserve", 13, UIStyle.FONT, if line then UIStyle.TEXT else UIStyle.TEXT_DIM)
 	state.AutomaticSize = Enum.AutomaticSize.None
 	state.TextWrapped = false
 	state.Size = UDim2.new(0.23, 0, 1, 0)
@@ -158,25 +160,73 @@ local function divisionRow(parent: Instance, d: Instance, order: number)
 	row.Parent = parent
 end
 
--- Bloc d'un camp : pays, organisation globale, divisions
-local function sideBlock(parent: Instance, order: number, title: string, countryId: unknown, list: { Instance })
+local function healthOf(list: { Instance }): number
+	local total = 0
+	for _, d in list do
+		total += ((d:GetAttribute("Force") :: number?) or 0) / 100
+	end
+	return if #list > 0 then total / #list else 0
+end
+
+-- L'armée d'un général en une ligne : nom, troupes au front / en tout, PV moyens
+local function armyRow(parent: Instance, generalId: string, troops: { Instance }, order: number)
+	local state = ReplicatedStorage:FindFirstChild("EtatMonde")
+	local generals = state and state:FindFirstChild("Generaux")
+	local general = generals and generals:FindFirstChild(generalId)
+	local inLine = 0
+	for _, d in troops do
+		if d:GetAttribute("EnLigne") == true then
+			inLine += 1
+		end
+	end
+	local name = if general then tostring(general:GetAttribute("Nom")) else "Général"
+	local row = UIStyle.text("Armee_" .. generalId, `🎖️ <b>{name}</b> : 🪖 {#troops} ({inLine} au front) · PV {percent(healthOf(troops))}`, 14)
+	row.LayoutOrder = order
+	row.Parent = parent
+end
+
+-- Bloc d'un camp : pays, moral et PV, soldats (l'armée d'un général en une ligne)
+local function sideBlock(parent: Instance, order: number, title: string, countryId: unknown, list: { Instance }, losses: number)
 	local block = card("Camp" .. order)
 	block.LayoutOrder = order
 	UIStyle.padding(block, 8, 10)
 	UIStyle.list(block, 4)
 	local country = if typeof(countryId) == "string" then Countries[countryId] else nil
 	local color = if country then country.color else Color3.fromRGB(150, 150, 150)
-	local header = UIStyle.text("Titre", `<font color="{hex(color)}">●</font> <b>{title}</b> : {countryName(countryId)} · {#list} division{if #list > 1 then "s" else ""}`, 15, UIStyle.FONT_MEDIUM)
+	local inLine = 0
+	for _, d in list do
+		if d:GetAttribute("EnLigne") == true then
+			inLine += 1
+		end
+	end
+	local header = UIStyle.text("Titre", `<font color="{hex(color)}">●</font> <b>{title}</b> : {countryName(countryId)} · {#list} soldat{if #list > 1 then "s" else ""} ({inLine} au front)`, 15, UIStyle.FONT_MEDIUM)
 	header.LayoutOrder = 1
 	header.Parent = block
 	local ratio = orgOf(list)
-	local orgLine = UIStyle.text("Organisation", `Organisation {percent(ratio)}`, 13, UIStyle.FONT, UIStyle.TEXT_DIM)
+	local orgLine = UIStyle.text("Moral", `Moral {percent(ratio)} · PV {percent(healthOf(list))}{if losses > 0 then ` · tombés : {losses}` else ""}`, 13, UIStyle.FONT, UIStyle.TEXT_DIM)
 	orgLine.LayoutOrder = 2
 	orgLine.Parent = block
 	local total = bar(block, "BarreOrg", ratio, Color3.fromRGB(110, 210, 110), 6, UDim.new(1, 0))
 	total.LayoutOrder = 3
-	for i, d in list do
-		divisionRow(block, d, 10 + i)
+	-- les divisions sur la carte une par une ; l'armée de chaque général en une ligne
+	local armies: { [string]: { Instance } } = {}
+	local armyOrder: { string } = {}
+	local row = 0
+	for _, d in list do
+		local generalId = d:GetAttribute("Armee")
+		if typeof(generalId) == "string" and generalId ~= "" then
+			if not armies[generalId] then
+				armies[generalId] = {}
+				table.insert(armyOrder, generalId)
+			end
+			table.insert(armies[generalId], d)
+		else
+			row += 1
+			divisionRow(block, d, 10 + row)
+		end
+	end
+	for i, generalId in armyOrder do
+		armyRow(block, generalId, armies[generalId], 5 + i)
 	end
 	block.Parent = parent
 end
@@ -190,6 +240,7 @@ local function modifiers(battle: Instance, attackers: { Instance }, defenders: {
 	if battle:GetAttribute("Riviere") == true then
 		table.insert(lines, `🌊 Rivière à franchir pour une partie des attaquants (attaque {signed(Terrain.rivers.Riviere.attack)} ou plus)`)
 	end
+	table.insert(lines, `🛡️ Défenseur : +{math.floor(CombatConfig.defenderBonus * 100 + 0.5)} % de défense (il connaît le terrain)`)
 	local entrench = 0
 	for _, d in defenders do
 		entrench += (d:GetAttribute("Retranchement") :: number?) or 0
@@ -224,11 +275,12 @@ local function modifiers(battle: Instance, attackers: { Instance }, defenders: {
 	local supportA, supportD = battle:GetAttribute("AppuiAttaque") == true, battle:GetAttribute("AppuiDefense") == true
 	if supportA or supportD then
 		local who = if supportA and supportD then "les deux camps" elseif supportA then "l'attaquant" else "le défenseur"
-		table.insert(lines, `💣 Appui au sol : {who} (organisation en moins pour la ligne ennemie)`)
+		table.insert(lines, `💣 Appui au sol : {who} (moral en moins pour la ligne ennemie)`)
 	end
 	local directions = battle:GetAttribute("Directions")
 	local count = if typeof(directions) == "string" and directions ~= "" then #string.split(directions, ",") else 1
-	table.insert(lines, `↔️ Largeur de bataille : {battle:GetAttribute("Largeur") or "?"} ({count} direction{if count > 1 then "s" else ""} d'attaque)`)
+	table.insert(lines, `↔️ Front : {CombatConfig.frontWidth} soldats au plus par camp en même temps ; attaque depuis {count} région{if count > 1 then "s" else ""} voisine{if count > 1 then "s" else ""}`)
+	table.insert(lines, `🏳️ Un soldat à 0 PV se replie avec {math.floor(CombatConfig.retreatHealth * 100 + 0.5)} % de PV (il meurt s'il est encerclé) ; un camp à bout de moral se replie`)
 	return lines
 end
 
@@ -307,8 +359,8 @@ local function render()
 		forecastLabel.LayoutOrder = 2
 		forecastLabel.Parent = list
 	end
-	sideBlock(list, 3, "Attaque", battle:GetAttribute("Attaquant"), attackers)
-	sideBlock(list, 4, "Défense", battle:GetAttribute("Defenseur"), defenders)
+	sideBlock(list, 3, "Attaque", battle:GetAttribute("Attaquant"), attackers, (battle:GetAttribute("PertesAttaque") :: number?) or 0)
+	sideBlock(list, 4, "Défense", battle:GetAttribute("Defenseur"), defenders, (battle:GetAttribute("PertesDefense") :: number?) or 0)
 	local block = card("Modificateurs")
 	block.LayoutOrder = 5
 	UIStyle.padding(block, 8, 10)

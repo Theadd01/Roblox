@@ -32,6 +32,9 @@ local SCALED = {
 	MissionsDuJour = true,
 	JouerEntreAmis = true,
 	Profil = true,
+	Confirmation = true, -- fenêtre de confirmation (guerre, attaque, votes)
+	ChoixTroupes = true, -- troupes à rattacher à un général
+	Votes = true, -- votes des trêves et des événements mondiaux
 	-- Les commandes du coin supérieur droit gardent toutes leur grille native de
 	-- 46 px. Les mettre à l'échelle séparément décalait leurs espacements et ne
 	-- correspondait pas au lanceur du passe, intégré à son propre ScreenGui.

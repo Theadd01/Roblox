@@ -5,6 +5,7 @@
 
 local Config = script.Parent.Config
 local Generals = require(Config.Generals)
+local Military = require(Config.Military)
 
 local GeneralTraits = {}
 
@@ -42,6 +43,24 @@ function GeneralTraits.bonus(army: Instance, effect: string): number
 		end
 	end
 	return math.min(Generals.maxBonus, total)
+end
+
+-- Bonus total d'un effet pour les troupes d'un général de divisions (cahier des charges v2,
+-- section 5) : traits, niveau (Config/Military.generals.levelBonus) et bonus choisis à chaque
+-- niveau (attributs Bonus_<effet>) ; jamais plus de Config/Military.generals.maxBonus
+function GeneralTraits.total(general: Instance, effect: string): number
+	local G = Military.generals
+	local total = GeneralTraits.bonus(general, effect)
+	local perLevel = G.levelBonus[effect]
+	if perLevel then
+		total += perLevel * (math.clamp(level(general), 1, G.maxLevel) - 1)
+	end
+	local choice = G.choices[effect]
+	if choice then
+		local picks = general:GetAttribute("Bonus_" .. effect)
+		total += choice.value * (if typeof(picks) == "number" then picks else 0)
+	end
+	return math.min(G.maxBonus, total)
 end
 
 -- Tire un trait possible pour cette sorte de force, différent de ceux déjà là

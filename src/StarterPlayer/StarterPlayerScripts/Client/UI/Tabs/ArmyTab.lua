@@ -40,6 +40,7 @@ local DivisionConfig = require(Config:WaitForChild("Divisions")) :: any
 local MilitaryConfig = require(Config:WaitForChild("Military")) :: any
 local PopulationRules = require(Shared:WaitForChild("PopulationRules")) :: any
 local BuildingRules = require(Shared:WaitForChild("BuildingRules")) :: any
+local TechState = require(Shared:WaitForChild("TechState")) :: any
 
 local POSTURES = {
 	{ id = "Normal", label = "Normal" },
@@ -233,36 +234,49 @@ function ArmyTab.build(container: Instance, countryId: string, options: Options)
 		return if typeof(value) == "number" then value else 0
 	end
 
-	-- Généraux (SYSTEME_MILITAIRE.md, 4.1) : les siens (toucher : sa fiche) et la nomination
+	-- Généraux (cahier des charges v2, section 5) : les siens (toucher : sa fiche) et l'achat ; un
+	-- général acheté ouvre tout de suite le choix de ses troupes
 	local function renderGenerals(regionId: string)
 		local G = MilitaryConfig.generals
 		local mine = myGenerals()
 		text(`🎖️ <b>Généraux</b>  <font color="{UIStyle.GREY_HEX}">{#mine}/{G.maxPerCountry}</font>`, 19, UIStyle.FONT_BOLD)
 		for _, g in mine do
-			local count = #GeneralPanel.divisionsOf(g)
+			local count = (g:GetAttribute("Troupes") :: number?) or 0
+			local capacity = (g:GetAttribute("Capacite") :: number?) or G.capacity[1]
 			local level = (g:GetAttribute("Niveau") :: number?) or 1
 			local destination = g:GetAttribute("Destination")
 			local where = if typeof(destination) == "string" and destination ~= "" then "→ " .. Regions[destination].name else Regions[g:GetAttribute("Region") :: string].name
-			local b = button("General_" .. g.Name, `🎖️ {g:GetAttribute("Nom")} {string.rep("★", level)} · {where} · {count} div.`, false, true, function()
+			local pending = ((g:GetAttribute("ChoixBonus") :: number?) or 0) > 0
+			local b = button("General_" .. g.Name, `🎖️ {g:GetAttribute("Nom")} {string.rep("★", level)} · {where} · 🪖 {count}/{capacity}{if pending then " · 🎁" else ""}`, false, true, function()
 				GeneralPanel.focus(g)
 			end)
 			b.Size = UDim2.new(1, 0, 0, 38)
 		end
 		local region = Regions[regionId]
 		if region and RegionView.getOwner(regionId) == countryId then
-			local occupied = false
-			for _, g in generalFolder:GetChildren() do
-				if g:GetAttribute("Region") == regionId or g:GetAttribute("Destination") == regionId then
-					occupied = true
-				end
-			end
-			local b = button("NommerGeneral", if occupied then `🎖️ {region.name} a déjà un général` else `🎖️ Nommer un général en {region.name} : {ResourceText.cost(G.cost)}`, false,
-				not occupied and #mine < G.maxPerCountry and canAfford(G.cost), function()
-					command("NommerGeneral", { region = regionId })
+			local b = button("NommerGeneral", `🎖️ Acheter un général en {region.name} : {ResourceText.cost(G.cost)}`, false,
+				#mine < G.maxPerCountry and canAfford(G.cost), function()
+					if busy then
+						return
+					end
+					busy = true
+					local accepted, reason = CommandSender.send("NommerGeneral", { region = regionId })
+					busy = false
+					Sfx.actionResult("Recruter", accepted)
+					message = if accepted then nil else reason or "Ordre refusé."
+					lastSignature = ""
+					render()
+					-- le serveur renvoie l'identifiant du nouveau général : choix de ses troupes
+					if accepted and typeof(reason) == "string" then
+						local general = generalFolder:WaitForChild(reason, 5)
+						if general then
+							GeneralPanel.openNew(general)
+						end
+					end
 				end)
 			b.Size = UDim2.new(1, 0, 0, 38)
 		end
-		text("Un général commande jusqu'à 24 divisions : sélectionne-les sur la carte, puis « Ajouter » dans sa fiche.", 14, UIStyle.FONT, UIStyle.TEXT_DIM)
+		text(`Un général est une armée : achète-le, puis choisis ses troupes (par type et par nombre). Elles quittent la carte et le suivent ; il ignore la limite de {MilitaryConfig.maxDivisionsPerRegion} par région et attaque avec toute son armée ({G.capacity[1]} troupes au niveau 1, {G.capacity[#G.capacity]} au niveau {#G.capacity}).`, 14, UIStyle.FONT, UIStyle.TEXT_DIM)
 	end
 
 	-- Divisions terrestres : nombre par type, entraînements en cours, recrutement
@@ -294,7 +308,7 @@ function ArmyTab.build(container: Instance, countryId: string, options: Options)
 			text("⚠️ Plus de pétrole : blindés et motorisés se traînent et attaquent moitié moins. Achète du pétrole au marché.", 15, UIStyle.FONT_MEDIUM, UIStyle.DANGER)
 		end
 		if stocks:GetAttribute("PenurieNourriture") == true then
-			text("⚠️ Plus de nourriture : l'organisation de tes divisions ne remonte plus.", 15, UIStyle.FONT_MEDIUM, UIStyle.DANGER)
+			text("⚠️ Plus de nourriture : le moral de tes divisions ne remonte plus.", 15, UIStyle.FONT_MEDIUM, UIStyle.DANGER)
 		end
 		for _, d in training do
 			local left = math.max(0, math.ceil((d:GetAttribute("Entrainement") :: number) - workspace:GetServerTimeNow()))
@@ -332,15 +346,16 @@ function ArmyTab.build(container: Instance, countryId: string, options: Options)
 		local recruitRegion = campRegion :: string
 		local camp = BuildingRules.campLevel(recruitRegion)
 		local here = #MilitaryState.inRegion(recruitRegion)
-		local full = here >= MilitaryConfig.maxDivisionsPerRegion
+		local capacity = TechState.stationingCap(countryId)
+		local full = here >= capacity
 		-- habitants de la région : les soldats sont pris parmi eux (Config/Divisions.manpower)
 		local people = regionState(recruitRegion) and regionState(recruitRegion):GetAttribute("Population")
 		local inhabitants = if typeof(people) == "number" then people else 0
-		text(`Recruter en <b>{Regions[recruitRegion].name}</b> (⛺ camp niv. {camp})  <font color="{UIStyle.GREY_HEX}">{here}/{MilitaryConfig.maxDivisionsPerRegion} divisions · 👥 {PopulationRules.format(inhabitants)} habitants</font>`, 16)
+		text(`Recruter en <b>{Regions[recruitRegion].name}</b> (⛺ camp niv. {camp})  <font color="{UIStyle.GREY_HEX}">{here}/{capacity} divisions · 👥 {PopulationRules.format(inhabitants)} habitants</font>`, 16)
 		for _, typeId in DivisionConfig.order do
 			local t = DivisionConfig.types[typeId]
 			if t.recruitable then
-				local seconds = math.ceil(t.trainSeconds * BuildingRules.campFactor(camp))
+				local seconds = math.ceil(t.trainSeconds * BuildingRules.campFactor(camp) * TechState.recruitTimeFactor(countryId))
 				local b = button("Division_" .. typeId, `{t.icon} {t.name} : {ResourceText.cost(t.cost)} · 👥 {t.manpower} k · {seconds} s`, false,
 					not full and #mine < max and canAfford(t.cost) and inhabitants >= t.manpower, function()
 						command("Recruter", { type = typeId, region = recruitRegion })
@@ -685,7 +700,7 @@ function ArmyTab.build(container: Instance, countryId: string, options: Options)
 		local home = options.defaultRegion()
 		for _, g in generalFolder:GetChildren() do
 			if g:GetAttribute("Proprietaire") == countryId then
-				table.insert(parts, `{g.Name}{g:GetAttribute("Region")}{g:GetAttribute("Destination")}{g:GetAttribute("Niveau")}{#GeneralPanel.divisionsOf(g)}`)
+				table.insert(parts, `{g.Name}{g:GetAttribute("Region")}{g:GetAttribute("Destination")}{g:GetAttribute("Niveau")}{g:GetAttribute("Troupes")}{g:GetAttribute("ChoixBonus")}`)
 			elseif g:GetAttribute("Region") == home or g:GetAttribute("Destination") == home then
 				table.insert(parts, "occupe" .. g.Name)
 			end

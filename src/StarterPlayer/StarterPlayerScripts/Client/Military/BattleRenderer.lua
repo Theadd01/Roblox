@@ -3,8 +3,11 @@
 --   icône ronde entre la région attaquée et ses attaquants : verte (on gagne), jaune (indécis) ou
 --   rouge (on perd) quand le joueur est concerné, grise sinon ; sous l'icône, une barre partagée
 --   entre l'organisation des deux camps ; toucher l'icône ouvre le panneau (BattlePanel) ;
---   à chaque tick, près de la caméra : tirs (éclair au bout du canon, traçante vers l'ennemi),
---   petites explosions stylisées dans la région attaquée, fusillade audible de près (pas de sang) ;
+--   à chaque tick (Config/CombatConfig.tickSeconds), près de la caméra : tirs (éclair au bout du
+--   canon, traçante vers l'ennemi) de chaque soldat engagé vers SA cible (attribut Cible, calculé
+--   par le serveur) ; les tireurs animés changent à chaque tick, tous finissent par tirer ; l'armée
+--   d'un général tire depuis le modèle du général ; petites explosions stylisées dans la région
+--   attaquée, fusillade audible de près (pas de sang) ;
 --   messages : région attaquée, victoire, défaite.
 -- Le serveur décide de tout (EtatMonde.Batailles, Genre « Terre ») ; ici on ne fait qu'afficher.
 
@@ -24,8 +27,10 @@ local FrenchNames = require(Shared:WaitForChild("FrenchNames")) :: any
 local MatchState = require(Shared:WaitForChild("MatchState")) :: any
 local UnitPainter = require(Shared:WaitForChild("UnitPainter")) :: any
 local Client = script.Parent.Parent
+local CombatConfig = require(Config:WaitForChild("CombatConfig")) :: any
 local MilitaryState = require(script.Parent:WaitForChild("MilitaryState"))
 local UnitRenderer = require(script.Parent:WaitForChild("UnitRenderer"))
+local GeneralRenderer = require(script.Parent:WaitForChild("GeneralRenderer"))
 local BattlePanel = require(script.Parent:WaitForChild("BattlePanel"))
 local Fog = require(Client:WaitForChild("State"):WaitForChild("Fog"))
 local UI = Client:WaitForChild("UI")
@@ -36,7 +41,6 @@ local ICON_SIZE = 40
 local ICON_LIFT = 3 -- studs au-dessus de la carte
 local TOWARD_ATTACKERS = 0.4 -- l'icône est à 40 % du chemin entre la région attaquée et ses attaquants
 local EFFECT_DISTANCE = 220 -- au-delà de cette distance de la caméra : pas de tirs ni de son
-local SHOTS_PER_SIDE = 6 -- tireurs animés par camp et par tick, au plus
 local EXPLOSIONS_PER_TICK = 3
 local COLORS = {
 	good = Color3.fromRGB(80, 200, 110),
@@ -56,7 +60,11 @@ type Track = {
 	stopSound: (() -> ())?,
 	ended: boolean,
 	planes: { [string]: Model }, -- avions de soutien au-dessus de la bataille, par camp
+	rotation: number, -- premier tireur animé au prochain tick
 }
+
+-- Un soldat engagé dont un modèle est affiché
+type Shooter = { id: string, model: Model, heavy: boolean, target: string? }
 
 local BattleRenderer = {}
 
@@ -227,20 +235,46 @@ local function shot(from: Model, to: Model, heavy: boolean, explode: boolean)
 	end
 end
 
--- Divisions de la bataille dont le modèle est affiché, par camp
-local function engagedModels(folder: Instance): ({ { model: Model, heavy: boolean } }, { { model: Model, heavy: boolean } })
+-- Modèle d'une division : le sien, ou celui de son général (l'armée d'un général n'a qu'un modèle)
+local function modelFor(d: Instance): Model?
+	local model = UnitRenderer.modelOf(d)
+	if model then
+		return model
+	end
+	if MilitaryState.isAbsorbed(d) then
+		return GeneralRenderer.modelOf(d:GetAttribute("Armee") :: string)
+	end
+	return nil
+end
+
+-- Soldats engagés de la bataille dont un modèle est affiché, par camp (dans un ordre stable), et
+-- par identifiant
+local function engagedModels(folder: Instance): ({ Shooter }, { Shooter }, { [string]: Shooter })
 	local regionId = folder:GetAttribute("Region")
 	local attackers, defenders = {}, {}
+	local byId: { [string]: Shooter } = {}
 	for _, d in MilitaryState.list() do
 		if d:GetAttribute("Bataille") == folder.Name and d:GetAttribute("EnLigne") == true then
-			local model = UnitRenderer.modelOf(d)
+			local model = modelFor(d)
 			if model then
-				local entry = { model = model, heavy = HEAVY[d:GetAttribute("Type") :: string] == true }
+				local target = d:GetAttribute("Cible")
+				local entry: Shooter = {
+					id = d.Name,
+					model = model,
+					heavy = HEAVY[d:GetAttribute("Type") :: string] == true,
+					target = if typeof(target) == "string" then target else nil,
+				}
+				byId[d.Name] = entry
 				table.insert(if d:GetAttribute("Region") == regionId then defenders else attackers, entry)
 			end
 		end
 	end
-	return attackers, defenders
+	local function byName(a: Shooter, b: Shooter): boolean
+		return a.id < b.id
+	end
+	table.sort(attackers, byName)
+	table.sort(defenders, byName)
+	return attackers, defenders, byId
 end
 
 local function near(track: Track): boolean
@@ -260,24 +294,31 @@ local function volley(track: Track)
 	if not track.stopSound then
 		track.stopSound = Sfx.loop("Fusillade", track.anchor.Position)
 	end
-	local attackers, defenders = engagedModels(track.folder)
+	local attackers, defenders, byId = engagedModels(track.folder)
 	if #attackers == 0 or #defenders == 0 then
 		return
 	end
 	local explosions = 0
-	local function fire(shooters: { { model: Model, heavy: boolean } }, targets: { { model: Model, heavy: boolean } })
-		for i = 1, math.min(SHOTS_PER_SIDE, #shooters) do
-			local shooter = shooters[i]
-			local target = targets[math.random(#targets)]
+	local perSide = CombatConfig.animatedShotsPerSide
+	local function fire(shooters: { Shooter }, targets: { Shooter })
+		for k = 1, math.min(perSide, #shooters) do
+			-- les tireurs animés tournent d'un tick à l'autre : tous tirent tour à tour
+			local shooter = shooters[(track.rotation + k - 1) % #shooters + 1]
+			-- sa cible calculée par le serveur ; sinon (cible sans modèle) un ennemi au hasard
+			local target = (shooter.target and byId[shooter.target]) or targets[math.random(#targets)]
+			if target.model == shooter.model then
+				continue
+			end
 			local explode = shooter.heavy and explosions < EXPLOSIONS_PER_TICK
 			if explode then
 				explosions += 1
 			end
-			task.delay(math.random() * 1.6, shot, shooter.model, target.model, shooter.heavy, explode)
+			task.delay(math.random() * CombatConfig.tickSeconds, shot, shooter.model, target.model, shooter.heavy, explode)
 		end
 	end
 	fire(attackers, defenders)
 	fire(defenders, attackers)
+	track.rotation += perSide
 end
 
 -- ---- Suivi des batailles -------------------------------------------------------------------
@@ -461,6 +502,7 @@ local function track(folder: Instance, fresh: boolean)
 		stopSound = nil,
 		ended = false,
 		planes = {},
+		rotation = 0,
 	}
 	tracks[folder] = t
 	button.Activated:Connect(function()

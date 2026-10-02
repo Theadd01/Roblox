@@ -1,8 +1,9 @@
 --!strict
--- Généraux sur la carte (SYSTEME_MILITAIRE.md, 7.2), côté client, purement visuel : un officier
--- (modèle « General », un peu plus grand qu'un soldat) dans sa région quartier général, derrière
--- ses divisions, avec un fanion aux couleurs de son pays et son nom au-dessus ; il marche vers
--- son nouveau quartier général quand il change de région. Seulement près de la caméra.
+-- Généraux sur la carte (cahier des charges v2, section 5), côté client, purement visuel : un
+-- général est UNE armée (ses troupes ne sont plus affichées) : un officier (modèle « General », un
+-- peu plus grand qu'un soldat) dans sa région, avec un fanion aux couleurs de son pays, son nom et
+-- le compteur de ses troupes au-dessus ; il marche avec son armée d'une région à l'autre ; plusieurs
+-- généraux dans une même région se tiennent côte à côte. Seulement près de la caméra.
 -- Ses généraux et ceux des alliés sont toujours visibles ; les autres, selon le brouillard.
 
 local Players = game:GetService("Players")
@@ -26,6 +27,7 @@ local MAX_HEIGHT = 300
 local LABEL_DISTANCE = 220
 local HEIGHT = 3.1 -- taille du modèle (studs), un peu plus grand qu'un soldat (2,4)
 local BEHIND = 5 -- derrière la formation des divisions (vers le sud de la ville)
+local SIDE_GAP = 3.2 -- écart entre deux généraux d'une même région
 local REFRESH = 0.3
 
 type View = {
@@ -63,13 +65,33 @@ local function visible(g: Instance): boolean
 	return typeof(regionId) == "string" and Fog.isRegionVisible(regionId)
 end
 
--- Position du général : au quartier général, ou en route vers le nouveau
+-- Décalage d'un général parmi ceux de sa région (côte à côte)
+local function sideOffset(g: Instance): number
+	local regionId = g:GetAttribute("Region")
+	local others = {}
+	local generals = folder
+	if generals then
+		for _, other in generals:GetChildren() do
+			if other:GetAttribute("Region") == regionId then
+				table.insert(others, other.Name)
+			end
+		end
+	end
+	if #others <= 1 then
+		return 0
+	end
+	table.sort(others)
+	local index = table.find(others, g.Name) or 1
+	return (index - (#others + 1) / 2) * SIDE_GAP
+end
+
+-- Position du général : dans sa région, ou en route vers la suivante
 local function positionOf(g: Instance): Vector3?
 	local here = anchorOf(g:GetAttribute("Region"))
 	if not here then
 		return nil
 	end
-	here += Vector3.new(0, 0, BEHIND)
+	here += Vector3.new(sideOffset(g), 0, BEHIND)
 	local destination = g:GetAttribute("Destination")
 	if typeof(destination) == "string" and destination ~= "" then
 		local there = anchorOf(destination)
@@ -86,7 +108,10 @@ local function labelText(g: Instance): string
 	local level = (g:GetAttribute("Niveau") :: number?) or 1
 	local stars = string.rep("★", math.clamp(level, 1, 5))
 	local disorganized = typeof(g:GetAttribute("Desorganise")) == "number"
-	return `{g:GetAttribute("Nom")} {stars} {GeneralTraits.icons(g)}{if disorganized then " ⚠" else ""}`
+	local wounded = typeof(g:GetAttribute("Blesse")) == "number"
+	local troops = (g:GetAttribute("Troupes") :: number?) or 0
+	-- compteur : l'armée entière en une seule unité
+	return `{g:GetAttribute("Nom")} {stars} {GeneralTraits.icons(g)}{if disorganized then " ⚠" else ""}{if wounded then " 🩹" else ""}\n🪖 {troops}`
 end
 
 local function makeView(g: Instance): View?
@@ -155,8 +180,8 @@ local function makeView(g: Instance): View?
 	local gui = Instance.new("BillboardGui")
 	gui.Name = "Nom"
 	gui.Adornee = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
-	gui.Size = UDim2.fromOffset(180, 22)
-	gui.StudsOffsetWorldSpace = Vector3.new(0, 2.6, 0)
+	gui.Size = UDim2.fromOffset(190, 40)
+	gui.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
 	gui.AlwaysOnTop = true
 	gui.LightInfluence = 0
 	gui.MaxDistance = LABEL_DISTANCE
@@ -270,6 +295,16 @@ end
 -- Position d'un général sur la carte (même sans modèle affiché)
 function GeneralRenderer.positionOf(g: Instance): Vector3?
 	return positionOf(g)
+end
+
+-- Modèle affiché d'un général (nil s'il est trop loin de la caméra ou caché)
+function GeneralRenderer.modelOf(generalId: string): Model?
+	for g, view in views do
+		if g.Name == generalId then
+			return view.model
+		end
+	end
+	return nil
 end
 
 return GeneralRenderer

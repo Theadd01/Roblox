@@ -344,9 +344,9 @@ local function finish(f: Fight, result: string)
 	f.folder:SetAttribute("Etat", result)
 	local E = Military.experience
 	local G = Military.generals
-	local generals: { [Instance]: boolean } = {} -- généraux des attaquants
+	local generals: { [Instance]: boolean } = {} -- généraux des attaquants (même blessés ou désorganisés)
 	for _, d in attackers do
-		local general = Armies.commanderOf(d)
+		local general = Armies.get(d:GetAttribute("Armee"))
 		if general then
 			generals[general] = true
 		end

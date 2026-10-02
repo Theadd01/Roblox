@@ -55,6 +55,7 @@ local SocialPanel = require(UI:WaitForChild("SocialPanel"))
 local UIScaler = require(UI:WaitForChild("UIScaler"))
 local ProfilePanel = require(UI:WaitForChild("ProfilePanel"))
 local EspionagePanel = require(UI:WaitForChild("EspionagePanel"))
+local WarPanel = require(UI:WaitForChild("WarPanel"))
 local Fog = require(script.Parent:WaitForChild("State"):WaitForChild("Fog"))
 local Settings = require(script.Parent:WaitForChild("State"):WaitForChild("Settings"))
 local GameSession = require(script.Parent:WaitForChild("State"):WaitForChild("GameSession"))
@@ -75,8 +76,6 @@ local FortificationView = require(MilitaryFolder:WaitForChild("FortificationView
 local SupplyView = require(MilitaryFolder:WaitForChild("SupplyView"))
 local GeneralRenderer = require(MilitaryFolder:WaitForChild("GeneralRenderer"))
 local GeneralPanel = require(MilitaryFolder:WaitForChild("GeneralPanel"))
-local PlanPanel = require(MilitaryFolder:WaitForChild("PlanPanel"))
-local PlanRenderer = require(MilitaryFolder:WaitForChild("PlanRenderer"))
 local MapEffects = require(Map:WaitForChild("MapEffects"))
 local LabelLOD = require(Map:WaitForChild("LabelLOD"))
 local AudioFolder = script.Parent:WaitForChild("Audio")
@@ -292,6 +291,7 @@ FactoryState.start()
 FactoryView.start(carte)
 FactoryPanel.attach()
 EspionagePanel.attach() -- espionnage dans la fiche des régions étrangères
+WarPanel.attach() -- déclarer la guerre ou attaquer depuis la fiche d'une région (cahier v2, section 3)
 Fog.start()
 RegionSelector.start(carte, function(regionId: string?)
 	if mode == "choix" then
@@ -328,18 +328,18 @@ RegionSelector.setTapInterceptor(function(screenPos: Vector2): boolean
 	if mode ~= "jeu" then
 		return false
 	end
-	-- choix du quartier général d'un général, puis les généraux (fiche ; double-clic : son
-	-- armée), les divisions (sélection), enfin escadrilles et flottes
-	if PlanPanel.handlePick(screenPos) or GeneralPanel.handlePick(screenPos) then
-		return true -- front, ligne offensive, repli ou nouveau quartier général
+	-- région où envoyer l'armée d'un général, puis les généraux (fiche ; double-clic : la caméra
+	-- le suit), les divisions (sélection), enfin escadrilles et flottes
+	if GeneralPanel.handlePick(screenPos) then
+		return true -- région où va (ou qu'attaque) l'armée du général
 	end
 	local general = GeneralRenderer.hitTest(screenPos)
 	if general then
 		local now = os.clock()
+		RegionPanel.show(nil) -- la fiche du général prend la place de celle de la région
 		if lastGeneralTap.general == general and now - lastGeneralTap.time < 0.35 then
-			Selection.set(GeneralPanel.divisionsOf(general))
+			GeneralPanel.focus(general)
 		else
-			RegionPanel.show(nil) -- la fiche du général prend la place de celle de la région
 			GeneralPanel.open(general)
 		end
 		lastGeneralTap = { general = general, time = now }
@@ -383,9 +383,7 @@ BattleRenderer.start(carte) -- batailles terrestres : icônes, tirs, explosions,
 FortificationView.start(carte) -- murets autour des villes fortifiées
 SupplyView.start(carte) -- poches d'encerclement : contour rouge clignotant
 task.spawn(GeneralRenderer.start, carte) -- généraux : officier et fanion au quartier général
-GeneralPanel.start() -- fiche d'un général (toucher son modèle)
-PlanPanel.start() -- ordres de plan de bataille dans cette fiche
-PlanRenderer.start(carte) -- front, flèches d'offensive et ligne de repli du général ouvert
+GeneralPanel.start() -- fiche d'un général (toucher son modèle) : son armée, ses troupes, ses ordres
 -- la molette zoome aussi au-dessus des étiquettes de divisions et des icônes de bataille (elles se
 -- touchent, mais ne bloquent pas le zoom)
 CameraController.setWheelPassThrough(function(pos: Vector2): boolean
