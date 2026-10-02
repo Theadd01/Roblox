@@ -198,7 +198,8 @@ local function countryContext(d: Instance, ctx: Combat.Context, encircled: boole
 		ctx.attackBonus = (ctx.attackBonus :: number) + both + Armies.bonus(d, "attack") * 0.5
 		ctx.defenseBonus = (ctx.defenseBonus or 0) + both + Armies.bonus(d, "defense")
 	end
-	ctx.resilience = Armies.bonus(d, "morale")
+	-- moral perdu en moins : général « Meneur d'hommes » / bonus Moral, recherche « Doctrine »
+	ctx.resilience = Armies.bonus(d, "morale") + TechState.divisionMoraleBonus(owner, typeId)
 	ctx.experience = (d:GetAttribute("Experience") :: number?) or 0
 	ctx.supplied = d:GetAttribute("Ravitaillee") ~= false
 	ctx.fuel = Stocks.get(owner, "Petrole") > 0

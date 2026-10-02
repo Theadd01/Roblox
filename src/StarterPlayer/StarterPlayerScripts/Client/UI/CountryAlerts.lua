@@ -94,17 +94,18 @@ function CountryAlerts.start(countryId: string)
 		lastLevel = level
 	end))
 
-	-- technologies acquises (recherche terminée, ou volée par ses espions)
-	local knownTechs = TechState.list(countryId)
+	-- niveaux de technologie atteints (recherche terminée, ou volée par ses espions)
+	local knownLevels = table.clone(TechState.levels(countryId))
 	GameSession.track(me:GetAttributeChangedSignal("Technologies"):Connect(function()
-		local current = TechState.list(countryId)
-		for _, id in current do
-			local tech = if table.find(knownTechs, id) then nil else Technologies.get(id)
-			if tech then
-				notify(`🧪 Nouvelle technologie : {tech.icon} <b>{tech.name}</b> ({tech.effectText})`, "success")
+		local current = TechState.levels(countryId)
+		for id, level in current do
+			local tech = Technologies.get(id)
+			if tech and level > (knownLevels[id] or 0) then
+				local entry = tech.levels[level]
+				notify(`🧪 {tech.icon} <b>{tech.name}</b> niveau {level} : {if entry then entry.text else tech.effectText}`, "success")
 			end
 		end
-		knownTechs = current
+		knownLevels = table.clone(current)
 	end))
 
 	-- révoltes qui le concernent (fil d'actualité)

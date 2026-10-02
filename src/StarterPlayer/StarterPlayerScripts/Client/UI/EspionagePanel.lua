@@ -83,13 +83,7 @@ end
 
 -- Technologies du pays visé que le joueur pourrait lui voler
 local function stealable(me: string, target: string): number
-	local n = 0
-	for _, techId in TechState.list(target) do
-		if TechState.available(me, techId) then
-			n += 1
-		end
-	end
-	return n
+	return #TechState.stealable(me, target)
 end
 
 -- Résumé de ce qui est affiché : on ne redessine que s'il change (évite de perdre un clic)

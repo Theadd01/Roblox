@@ -12,6 +12,7 @@ local Regions = require(Config:WaitForChild("Regions")) :: any
 local Resources = require(Config:WaitForChild("Resources")) :: any
 local IncomeRules = require(Shared:WaitForChild("IncomeRules")) :: any
 local StabilityRules = require(Shared:WaitForChild("StabilityRules")) :: any
+local TechState = require(Shared:WaitForChild("TechState")) :: any
 local Server = script.Parent.Parent
 local RegionService = require(Server:WaitForChild("Map"):WaitForChild("RegionService"))
 local Stability = require(Server:WaitForChild("Politics"):WaitForChild("Stability"))
@@ -58,7 +59,8 @@ function TaxService.tick()
 		local amount = 0
 		if p then
 			local factor = StabilityRules.productionFactor(Stability.get(countryId))
-			local exact = IncomeRules.taxes(p.home, p.occupied, factor) + (carry[countryId] or 0)
+			-- recherche « Fiscalité moderne » : plus d'impôts
+			local exact = IncomeRules.taxes(p.home, p.occupied, factor) * TechState.incomeFactor(countryId) + (carry[countryId] or 0)
 			amount = math.floor(exact)
 			carry[countryId] = exact - amount
 			if amount > 0 then

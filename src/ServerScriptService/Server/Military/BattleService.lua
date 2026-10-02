@@ -20,6 +20,7 @@ local Units = require(Config:WaitForChild("Units")) :: any
 local MilitaryMath = require(Shared:WaitForChild("MilitaryMath")) :: any
 local ProjectState = require(Shared:WaitForChild("ProjectState")) :: any
 local GeneralTraits = require(Shared:WaitForChild("GeneralTraits")) :: any
+local TechState = require(Shared:WaitForChild("TechState")) :: any
 local Generals = require(Config:WaitForChild("Generals")) :: any
 local Server = script.Parent.Parent
 local RegionService = require(Server:WaitForChild("Map"):WaitForChild("RegionService"))
@@ -64,8 +65,10 @@ end
 -- Retire des unités tant que les dégâts couvrent leurs points de vie (les moins chères d'abord).
 -- Renvoie les dégâts restants, pas encore suffisants pour abattre une unité de plus.
 local function applyDamage(army: Instance, damage: number): number
+	local owner = army:GetAttribute("Proprietaire")
 	for _, typeId in Units.kinds[Units.kindOf(army)].lossOrder do
-		local health = Combat.units[typeId].health
+		-- recherche (Aviation, Marine) : plus de PV
+		local health = Combat.units[typeId].health * (if typeof(owner) == "string" then TechState.unitHealthFactor(owner, typeId) else 1)
 		local n = count(army, typeId)
 		while n > 0 and damage >= health do
 			n -= 1

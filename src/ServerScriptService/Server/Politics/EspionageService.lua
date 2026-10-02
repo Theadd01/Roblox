@@ -174,12 +174,8 @@ function EspionageService.steal(countryId: string, targetId: unknown): (boolean,
 	if not seen then
 		return false, `Aucune région {FrenchNames.of(targetName)} n'est visible : révèle-en une d'abord.`
 	end
-	local candidates = {}
-	for _, techId in TechState.list(targetId) do
-		if TechState.available(countryId, techId) then
-			table.insert(candidates, techId)
-		end
-	end
+	-- un niveau d'une technologie que la cible a et que le voleur pourrait chercher
+	local candidates = TechState.stealable(countryId, targetId)
 	if #candidates == 0 then
 		return false, `{FrenchNames.The(targetName)} n'a aucune technologie à te voler pour l'instant.`
 	end
@@ -200,7 +196,7 @@ function EspionageService.steal(countryId: string, targetId: unknown): (boolean,
 		ResearchService.grant(countryId, techId)
 		notify("Vol", countryId, targetId, targetId)
 	end
-	local result = if succeeded then `Tes espions ont volé les plans : {tech.icon} {tech.name} !` else "Échec : tes espions n'ont rien trouvé."
+	local result = if succeeded then `Tes espions ont volé les plans : {tech.icon} {tech.name} niveau {TechState.level(countryId, techId)} !` else "Échec : tes espions n'ont rien trouvé."
 	if rng:NextNumber() < T.caught then
 		DilemmaService.changeReputation(countryId, Espionage.sabotage.caughtReputation)
 		notify("Demasque", countryId, targetId, targetId)

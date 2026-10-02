@@ -1,7 +1,9 @@
 --!strict
--- IA de la recherche (Config/Technologies) : un pays IA sans recherche en cours lance la première
--- technologie disponible de ses branches préférées (selon sa personnalité), s'il peut la payer en
--- gardant une réserve ; il achète au marché les matériaux qui lui manquent.
+-- IA de la recherche (Config/Technologies, cahier des charges v2 section 4) : un pays IA qui a un
+-- emplacement de recherche libre lance le niveau suivant de la première technologie disponible de
+-- ses branches préférées (selon sa personnalité), s'il peut la payer en gardant une réserve ; il
+-- achète au marché les matériaux qui lui manquent. Sa recherche va moins vite que celle des joueurs
+-- (Config/Match.difficulties, ResearchService.speedOf).
 -- Mêmes fonctions que les joueurs (ResearchService, MarketService).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -22,15 +24,15 @@ local CURRENCY: string = Resources.currency.id
 local PRICE_MARGIN = 1.2 -- le prix monte pendant l'achat : on prévoit 20 % de plus
 local EXTRA_RESERVE = 300 -- crédits gardés en plus de la réserve habituelle
 
--- Branches préférées selon la personnalité
+-- Branches préférées selon la personnalité (onglets de Config/Technologies)
 local PREFERENCES: { [string]: { string } } = {
-	Agressif = { "Militaire", "Economie", "Renseignement" },
-	Opportuniste = { "Militaire", "Renseignement", "Economie" },
-	Industriel = { "Economie", "Militaire", "Renseignement" },
-	Commercant = { "Economie", "Renseignement", "Militaire" },
-	Defensif = { "Renseignement", "Militaire", "Economie" },
+	Agressif = { "Infanterie", "Blindes", "Artillerie", "Economie", "Industrie", "Aviation", "Marine", "Renseignement" },
+	Opportuniste = { "Infanterie", "Renseignement", "Blindes", "Economie", "Artillerie", "Industrie", "Aviation", "Marine" },
+	Industriel = { "Industrie", "Economie", "Infanterie", "Artillerie", "Blindes", "Marine", "Aviation", "Renseignement" },
+	Commercant = { "Economie", "Industrie", "Renseignement", "Infanterie", "Marine", "Aviation", "Artillerie", "Blindes" },
+	Defensif = { "Infanterie", "Artillerie", "Economie", "Renseignement", "Industrie", "Blindes", "Aviation", "Marine" },
 }
-local DEFAULT = { "Economie", "Militaire", "Renseignement" }
+local DEFAULT = { "Economie", "Infanterie", "Industrie", "Artillerie", "Blindes", "Renseignement", "Aviation", "Marine" }
 
 export type Action = { kind: string, score: number, label: string, run: () -> boolean }
 
@@ -52,13 +54,22 @@ local function budgetFor(countryId: string, cost: { [string]: number }): (number
 	return credits, missing
 end
 
+-- Technologie à chercher : dans l'ordre des branches préférées, la moins avancée de la branche
+-- (les premières de l'arbre d'abord)
 local function choose(countryId: string): any?
 	local order = PREFERENCES[PersonalityService.get(countryId) or ""] or DEFAULT
 	for _, branch in order do
+		local best: any? = nil
 		for _, tech in Technologies.list do
 			if tech.branch == branch and TechState.available(countryId, tech.id) then
-				return tech
+				local level = TechState.level(countryId, tech.id)
+				if not best or level < best.level or (level == best.level and tech.column < best.tech.column) then
+					best = { tech = tech, level = level }
+				end
 			end
+		end
+		if best then
+			return best.tech
 		end
 	end
 	return nil
@@ -66,14 +77,16 @@ end
 
 function ResearchAI.actions(countryId: string, P: any): { Action }
 	local actions: { Action } = {}
-	if not MatchState.isRunning() or TechState.research(countryId) then
+	if not MatchState.isRunning() or #TechState.queue(countryId) >= TechState.slots(countryId) then
 		return actions
 	end
 	local tech = choose(countryId)
 	if not tech then
 		return actions
 	end
-	local need, missing = budgetFor(countryId, tech.cost)
+	local level = TechState.level(countryId, tech.id) + 1
+	local cost = tech.levels[level].cost
+	local need, missing = budgetFor(countryId, cost)
 	if Stocks.get(countryId, CURRENCY) - need < P.creditReserve + EXTRA_RESERVE then
 		return actions
 	end
@@ -81,7 +94,7 @@ function ResearchAI.actions(countryId: string, P: any): { Action }
 	table.insert(actions, {
 		kind = "Industrie",
 		score = 0.38,
-		label = `lance la recherche {tech.icon} {tech.name}`,
+		label = `lance la recherche {tech.icon} {tech.name} niveau {level}`,
 		run = function(): boolean
 			for resourceId, amount in missing do
 				if not MarketService.buy(countryId, resourceId, amount, nil) then
