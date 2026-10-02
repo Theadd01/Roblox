@@ -37,7 +37,6 @@ local BattleManager = require(Military:WaitForChild("BattleManager"))
 local Fortifications = require(Military:WaitForChild("Fortifications"))
 local Supply = require(Military:WaitForChild("Supply"))
 local Armies = require(Military:WaitForChild("Armies"))
-local GeneralAI = require(Military:WaitForChild("GeneralAI"))
 local Politics = Server:WaitForChild("Politics")
 local DiplomacyService = require(Politics:WaitForChild("DiplomacyService"))
 local Stability = require(Politics:WaitForChild("Stability"))
@@ -128,7 +127,6 @@ local function resetWorld()
 		{ name = "population", run = PopulationService.reset }, -- après les régions : habitants de départ
 		{ name = "mouvements", run = Movement.reset },
 		{ name = "généraux", run = Armies.reset },
-		{ name = "plans des généraux", run = GeneralAI.reset },
 		{ name = "divisions", run = Divisions.reset }, -- après les régions : divisions de départ
 		{ name = "fortifications", run = Fortifications.reset },
 		{ name = "ravitaillement", run = Supply.reset },

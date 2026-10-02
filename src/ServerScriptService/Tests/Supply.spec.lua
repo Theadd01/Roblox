@@ -83,8 +83,8 @@ table.insert(tests, function(): Result
 	local slow = Movement.stepSeconds("Blindee", 140, "Plaine", false)
 	return {
 		name = "Blindés sans pétrole : vitesse et attaque fortement réduites",
-		ok = noFuel.attack <= withFuel.attack * 0.5 + 1e-6 and slow >= fast * 1.5,
-		detail = `attaque {string.format("%.2f", withFuel.attack)} -> {string.format("%.2f", noFuel.attack)} ; étape de 140 studs : {math.floor(fast + 0.5)} s -> {math.floor(slow + 0.5)} s`,
+		ok = noFuel.dps <= withFuel.dps * 0.5 + 1e-6 and slow >= fast * 1.5,
+		detail = `dégâts par seconde {string.format("%.1f", withFuel.dps)} -> {string.format("%.1f", noFuel.dps)} ; étape de 140 studs : {math.floor(fast + 0.5)} s -> {math.floor(slow + 0.5)} s`,
 	}
 end)
 

@@ -18,11 +18,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = Shared:WaitForChild("Config")
 local Military = require(Config:WaitForChild("Military")) :: any
-local DivisionConfig = require(Config:WaitForChild("Divisions")) :: any
 local Countries = require(Config:WaitForChild("Countries")) :: any
 local Regions = require(Config:WaitForChild("Regions")) :: any
 local Units = require(Config:WaitForChild("Units")) :: any
-local Terrain = require(Config:WaitForChild("Terrain")) :: any
 local RegionTerrain = require(Config:WaitForChild("RegionTerrain")) :: any
 local MapSettings = require(Config:WaitForChild("MapSettings")) :: any
 local MapProjection = require(Shared:WaitForChild("MapProjection")) :: any
@@ -96,17 +94,8 @@ function Movement.defenders(regionId: string, attacker: string): { Instance }
 	return list
 end
 
--- Durée d'une étape par la terre (fonction pure, testée dans tests/Supply.spec) : distance / vitesse
--- du type, ralentie par le terrain d'arrivée et, pour les véhicules, par le manque de pétrole
-function Movement.stepSeconds(typeId: string, distance: number, terrainId: string?, fuel: boolean): number
-	local t = DivisionConfig.types[typeId] or DivisionConfig.types.Infanterie
-	local terrain = Terrain.types[terrainId or Terrain.default] or Terrain.types[Terrain.default]
-	local speed = t.speed * terrain.speed
-	if t.fuel and not fuel then
-		speed *= Military.combat.noFuel -- sans pétrole, les véhicules se traînent
-	end
-	return math.clamp(distance / math.max(speed, 0.5), Military.travel.min, Military.travel.max)
-end
+-- Durée d'une étape par la terre (fonction pure, testée dans Tests/Supply.spec : voir Divisions)
+Movement.stepSeconds = Divisions.stepSeconds
 
 -- Durée d'une étape (secondes) ; par la mer, à la vitesse des flottes
 function Movement.travelTime(d: Instance, from: string, to: string, bySea: boolean?): number
@@ -128,7 +117,7 @@ local function findPath(d: Instance, from: string, goal: string): { string }?
 	local countryId = d:GetAttribute("Proprietaire") :: string
 	local function passable(regionId: string): boolean
 		local owner = RegionService.getOwner(regionId)
-		if regionId ~= goal and Divisions.occupancy(regionId) >= Military.maxDivisionsPerRegion then
+		if regionId ~= goal and Divisions.occupancy(regionId) >= Divisions.capacityOf(regionId) then
 			return false
 		end
 		if regionId == goal or owner == countryId then
@@ -250,7 +239,7 @@ local function continueItinerary(d: Instance)
 		end
 		return
 	end
-	if Divisions.occupancy(nextId) >= Military.maxDivisionsPerRegion then
+	if Divisions.occupancy(nextId) >= Divisions.capacityOf(nextId) then
 		setItinerary(d, {}) -- région pleine : la division s'arrête ici
 		return
 	end
@@ -260,10 +249,11 @@ local function continueItinerary(d: Instance)
 end
 
 -- Une région ennemie est prise : les divisions ennemies qui y restent (à l'entraînement, ou sans
--- organisation pour fuir) sont perdues ; celles qui battent en retraite continuent leur route
+-- organisation pour fuir) sont perdues ; celles qui battent en retraite continuent leur route ;
+-- les armées des généraux reculent avec leur général (Armies, au changement de propriétaire)
 local function capture(regionId: string, countryId: string)
 	for _, other in Divisions.inRegion(regionId) do
-		if isHostile(countryId, other:GetAttribute("Proprietaire") :: string) and not Divisions.isMoving(other) then
+		if isHostile(countryId, other:GetAttribute("Proprietaire") :: string) and not Divisions.isMoving(other) and not Divisions.isAbsorbed(other) then
 			Divisions.destroy(other)
 		end
 	end
@@ -318,7 +308,7 @@ function Movement.advance(d: Instance, target: string)
 		return
 	end
 	local from = d:GetAttribute("Region") :: string
-	if Divisions.occupancy(target) >= Military.maxDivisionsPerRegion then
+	if Divisions.occupancy(target) >= Divisions.capacityOf(target) then
 		setItinerary(d, {})
 		return
 	end
@@ -331,9 +321,9 @@ function Movement.advance(d: Instance, target: string)
 	startStep(d, from, target, l and l.bySea, Military.combat.advanceTravelFactor)
 end
 
--- Ordre de déplacement (ou d'attaque) de plusieurs divisions vers une région. fromPlan : l'ordre
--- vient du général (GeneralAI), les divisions restent dans son plan de bataille
-function Movement.order(countryId: string, list: { Instance }, goal: unknown, fromPlan: boolean?): (boolean, string?)
+-- Ordre de déplacement (ou d'attaque) de plusieurs divisions vers une région (les troupes d'un
+-- général ne bougent qu'avec lui : Armies)
+function Movement.order(countryId: string, list: { Instance }, goal: unknown): (boolean, string?)
 	if typeof(goal) ~= "string" or not Regions[goal] then
 		return false, "Région inconnue."
 	end
@@ -342,7 +332,7 @@ function Movement.order(countryId: string, list: { Instance }, goal: unknown, fr
 	if hostile then
 		if not DiplomacyService.atWar(countryId, owner :: string) then
 			local country = Countries[owner :: string]
-			return false, `Pas en guerre avec {if country then FrenchNames.the(country.name) else "ce pays"} : déclare la guerre dans l'onglet Diplomatie.`
+			return false, `Pas en guerre avec {if country then FrenchNames.the(country.name) else "ce pays"} : déclare-lui la guerre (fiche de la région ou onglet Diplomatie).`
 		end
 		local ceasefire = CouncilState.ceasefireLeft()
 		if ceasefire > 0 then
@@ -350,7 +340,8 @@ function Movement.order(countryId: string, list: { Instance }, goal: unknown, fr
 		end
 	end
 	-- place restante dans la région visée (les divisions qui y restent ou y vont déjà comptent)
-	local room = Military.maxDivisionsPerRegion - Divisions.occupancy(goal)
+	local capacity = Divisions.capacityOf(goal)
+	local room = capacity - Divisions.occupancy(goal)
 	for _, d in list do
 		if (d:GetAttribute("Region") == goal and not Divisions.isMoving(d)) or d:GetAttribute("Destination") == goal then
 			room += 1
@@ -363,7 +354,7 @@ function Movement.order(countryId: string, list: { Instance }, goal: unknown, fr
 		-- une division qui attaque peut être envoyée ailleurs (elle quitte la bataille) ; une
 		-- division qui défend sa région ne la quitte pas en pleine bataille
 		local attacking = h ~= nil and Divisions.inBattle(d) and h.isAttacking(d)
-		if Divisions.isTraining(d) or (Divisions.inBattle(d) and not attacking) then
+		if Divisions.isTraining(d) or Divisions.isAbsorbed(d) or (Divisions.inBattle(d) and not attacking) then
 			busy += 1
 			continue
 		end
@@ -395,16 +386,14 @@ function Movement.order(countryId: string, list: { Instance }, goal: unknown, fr
 	end
 	if next(paths) == nil and sent == 0 then
 		if full > 0 then
-			return false, `Région pleine : {Military.maxDivisionsPerRegion} divisions au maximum.`
+			return false, `Région pleine : {capacity} divisions au maximum.`
 		elseif blocked > 0 then
 			return false, "Aucun chemin : il faut traverser un pays neutre, une région pleine, ou la mer sans flotte au port."
 		end
-		return false, "Ces divisions sont à l'entraînement ou au combat."
+		return false, "Ces divisions sont à l'entraînement, au combat, ou dans l'armée d'un général."
 	end
 	for d, path in paths do
-		if not fromPlan then
-			d:SetAttribute("Controle", "Manuel") -- un ordre direct sort la division du plan de bataille
-		end
+		d:SetAttribute("AttaqueContinue", nil) -- un ordre direct arrête son offensive continue
 		if h and Divisions.inBattle(d) then
 			-- elle attaque déjà la région visée : elle continue
 			if path[1] ~= nil and #path == 1 and d:GetAttribute("Bataille") == battleIn(path[1]) then

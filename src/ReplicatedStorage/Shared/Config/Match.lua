@@ -79,4 +79,16 @@ Match.domains = {
 Match.contractValue = 150 -- un contrat signé compte comme 150 crédits de ventes (domaine Commerce)
 Match.rankingSize = 10 -- pays affichés dans le classement (plus le rang de chaque joueur)
 
+-- Difficulté de la partie (cahier des charges v2) : choisie dans Studio par l'attribut
+-- « Difficulte » de Workspace (Facile, Normal ou Difficile), sinon `difficulty`.
+--   researchSpeed : vitesse de recherche des pays IA (les joueurs : 1) ;
+--   generalDefeat : un général dont toute l'armée est détruite est « Blesse » (hors combat un
+--     moment, Config/Military.generals.woundedSeconds) ou « Mort » (il disparaît).
+Match.difficulty = "Normal"
+Match.difficulties = {
+	Facile = { researchSpeed = 0.5, generalDefeat = "Blesse" },
+	Normal = { researchSpeed = 0.75, generalDefeat = "Blesse" },
+	Difficile = { researchSpeed = 1, generalDefeat = "Mort" },
+}
+
 return Match

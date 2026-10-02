@@ -204,6 +204,7 @@ local function requireNode(node)
 		Font = roblox.Font,
 		NumberRange = roblox.NumberRange,
 		Random = Random,
+		Instance = roblox.Instance,
 		task = task,
 		warn = function(...)
 			print("[warn]", ...)

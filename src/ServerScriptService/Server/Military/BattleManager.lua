@@ -1,29 +1,41 @@
 --!strict
--- Batailles terrestres (SYSTEME_MILITAIRE.md, 5.1 à 5.4) : création, suivi, ticks et fin.
---   Une bataille a lieu dans une région ennemie défendue ; on l'attaque depuis une ou plusieurs
---   régions voisines (les attaquants restent chez eux pendant la bataille). Les divisions du
---   défenseur et de ses alliés présentes dans la région la défendent, celles qui arrivent aussi.
---   Chaque tick (Config/Military.tickSeconds, boucle centrale) : Combat.resolveTick (fonctions pures).
---   Fin : l'attaquant n'a plus d'organisation -> l'attaque échoue (« Repli »), il reste chez lui ;
---         le défenseur n'en a plus -> ses divisions reculent vers une région amie voisine (détruites
---         si elles sont encerclées), la région est prise et les attaquants y entrent (« Victoire »).
+-- Batailles terrestres (cahier des charges v2, section 2) : création, suivi, ticks et fin.
+--   Une bataille a lieu dans une région ennemie défendue ; on l'attaque depuis TOUTES ses régions
+--   voisines (attackRegion : chaque région voisine engage ses divisions ; 2 régions x 10 = 20
+--   soldats) ; les attaquants restent chez eux pendant la bataille (la limite de 10 par région ne
+--   vaut que pour le stationnement). Un général attaque avec toute son armée (Armies). Les
+--   divisions du défenseur et de ses alliés présentes dans la région la défendent.
+--   UNE boucle par bataille : un tick toutes les Config/CombatConfig.tickSeconds, résolu par
+--   Combat.resolveTick (fonctions pures) ; les modèles des clients ne font que l'animer.
+--   Soldat à 0 PV : il se replie dans une région amie voisine avec retreatHealth de ses PV (un
+--   attaquant reste dans sa région, un soldat d'un général reste dans son armée), ou il meurt
+--   s'il n'en a aucune.
+--   Fin : plus aucun défenseur debout (ou repli du défenseur à bout de moral) -> la région change
+--   de propriétaire tout de suite (« Victoire ») et les vainqueurs y avancent ; plus d'attaquant
+--   (ou repli de l'attaquant) -> l'attaque échoue (« Repli »), ils restent chez eux.
+--   Attaque continue (attribut AttaqueContinue des divisions) : après une victoire, les divisions
+--   qui ont avancé attaquent la région ennemie voisine suivante, tant qu'elles ont des effectifs
+--   et du moral (Config/CombatConfig.continuous).
 -- État publié dans ReplicatedStorage.EtatMonde.Batailles.<id> : Region, Attaquant, Defenseur, Etat
 -- ("EnCours" | "Victoire" | "Repli"), Genre ("Terre"), Raid (false), Debut, Tick, Largeur,
 -- Directions (régions d'où l'on attaque), Terrain, Riviere, NbAttaque, NbDefense, OrgAttaque et
--- OrgDefense (0 à 1), Prevision ("Attaquant" | "Indecis" | "Defenseur") ; gardé quelques secondes
--- après la fin. Attribut Bataille de la région et des divisions engagées (EnLigne : en première
--- ligne, sinon en réserve).
+-- OrgDefense (0 à 1), PVAttaque et PVDefense (0 à 1), EnLigneAttaque, EnLigneDefense,
+-- PertesAttaque, PertesDefense, Prevision ("Attaquant" | "Indecis" | "Defenseur") ; gardé quelques
+-- secondes après la fin. Attributs des divisions engagées : Bataille, EnLigne (au front, sinon en
+-- réserve), Cible (division visée), Force (PV en %), Org (moral).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = Shared:WaitForChild("Config")
 local Military = require(Config:WaitForChild("Military")) :: any
+local CombatConfig = require(Config:WaitForChild("CombatConfig")) :: any
 local Regions = require(Config:WaitForChild("Regions")) :: any
 local RegionTerrain = require(Config:WaitForChild("RegionTerrain")) :: any
 local Terrain = require(Config:WaitForChild("Terrain")) :: any
 local ProjectState = require(Shared:WaitForChild("ProjectState")) :: any
 local CouncilState = require(Shared:WaitForChild("CouncilState")) :: any
+local TechState = require(Shared:WaitForChild("TechState")) :: any
 local Server = script.Parent.Parent
 local RegionService = require(Server:WaitForChild("Map"):WaitForChild("RegionService"))
 local DiplomacyService = require(Server:WaitForChild("Politics"):WaitForChild("DiplomacyService"))
@@ -35,11 +47,14 @@ local Movement = require(script.Parent:WaitForChild("Movement"))
 local Combat = require(script.Parent:WaitForChild("Combat"))
 local BattleService = require(script.Parent:WaitForChild("BattleService"))
 local Armies = require(script.Parent:WaitForChild("Armies"))
-local BattlePlans = require(script.Parent:WaitForChild("BattlePlans"))
 local AirSupport = require(script.Parent:WaitForChild("AirSupport"))
 
-local ESTIMATE_TICKS = 40 -- ticks simulés pour la prévision du vainqueur
-local FORCE_PER_CASUALTY = 20 -- points de force perdus = 1 « unité » pour la stabilité (Stability.casualties)
+local ESTIMATE_TICKS = 80 -- ticks simulés pour la prévision du vainqueur (40 s)
+local ESTIMATE_EVERY = 4 -- une prévision tous les 4 ticks (2 s)
+local FORCE_PER_CASUALTY = 20 -- points de PV perdus = 1 « unité » pour la stabilité (Stability.casualties)
+local CONTINUE_CHECK = 1 -- secondes entre deux vérifications de l'attaque continue
+
+type Memory = { line: boolean, target: string? }
 
 type Fight = {
 	id: string,
@@ -48,7 +63,12 @@ type Fight = {
 	attacker: string, -- pays qui a lancé l'attaque
 	defender: string, -- propriétaire de la région
 	attackers: { [Instance]: string }, -- division -> région d'où elle attaque
+	out: { [Instance]: boolean }, -- défenseurs tombés restés dans la région (blessés d'un général)
+	memory: { [string]: Memory }, -- ligne et cible de chaque soldat (d'un tick à l'autre)
+	elapsed: number,
+	sides: any, -- état du déploiement et de la rotation des cibles (Combat)
 	ticks: number,
+	losses: { attackers: number, defenders: number },
 	started: number,
 }
 
@@ -58,6 +78,11 @@ local folder: Instance? = nil -- EtatMonde.Batailles (créé par BattleService)
 local nextId = 0
 local fights: { [string]: Fight } = {} -- par région disputée
 local engaged: { [Instance]: Fight } = {} -- divisions engagées (attaque ou défense)
+local continueClock = 0
+
+local function now(): number
+	return workspace:GetServerTimeNow()
+end
 
 local function regionFolder(regionId: string): Instance?
 	local state = ReplicatedStorage:FindFirstChild("EtatMonde")
@@ -67,6 +92,10 @@ end
 
 local function isHostile(countryId: string, owner: string?): boolean
 	return owner ~= nil and owner ~= countryId and not DiplomacyService.areAllies(countryId, owner)
+end
+
+local function friendly(countryId: string, owner: string?): boolean
+	return owner ~= nil and (owner == countryId or DiplomacyService.areAllies(countryId, owner))
 end
 
 -- Rivière entre deux régions voisines (Config/RegionTerrain) : "Riviere", "Fleuve" ou nil
@@ -89,6 +118,7 @@ local function release(d: Instance)
 	if d.Parent then
 		d:SetAttribute("Bataille", nil)
 		d:SetAttribute("EnLigne", nil)
+		d:SetAttribute("Cible", nil)
 	end
 end
 
@@ -103,11 +133,12 @@ function BattleManager.isAttacking(d: Instance): boolean
 end
 
 -- Défenseurs d'une région : divisions du propriétaire et de ses alliés, prêtes, qui ne partent pas
+-- (les soldats d'un général tombés pendant la bataille restent à l'arrière de son armée)
 local function defendersOf(f: Fight): { Instance }
 	local list = {}
 	for _, d in Divisions.inRegion(f.region) do
 		local owner = d:GetAttribute("Proprietaire") :: string
-		if not isHostile(f.defender, owner) and not Divisions.isTraining(d) and not Divisions.isMoving(d) then
+		if not isHostile(f.defender, owner) and not Divisions.isTraining(d) and not Divisions.isMoving(d) and not f.out[d] then
 			table.insert(list, d)
 		end
 	end
@@ -134,20 +165,23 @@ local function attackersOf(f: Fight): { Instance }
 	return list
 end
 
--- Bonus des grands projets (Config/Projects), de la milice d'un pays affaibli (BalanceService) et
--- des traits du général de la division (Config/Generals, voir Armies). encircled : les défenseurs
--- sont coupés de leur ravitaillement (trait « Maître de l'encerclement » des attaquants)
+-- Bonus des grands projets (Config/Projects), de la recherche (niveau des unités, Config/
+-- Technologies), de la milice d'un pays affaibli (BalanceService) et du général de la division
+-- (niveau, bonus choisis, traits : Armies). encircled : les défenseurs sont coupés de leur
+-- ravitaillement (trait « Maître de l'encerclement » des attaquants)
 local function countryContext(d: Instance, ctx: Combat.Context, encircled: boolean): Combat.Context
 	local owner = d:GetAttribute("Proprietaire") :: string
-	local typeId = d:GetAttribute("Type")
+	local typeId = d:GetAttribute("Type") :: string
 	ctx.attackBonus = (ctx.attackBonus or 0) + ProjectState.factor(owner, "attack") - 1
 	if not ctx.attacking then
 		ctx.defenseBonus = (ctx.defenseBonus or 0) + ProjectState.factor(owner, "defense") - 1
 	end
+	ctx.health = TechState.divisionHealthBonus(owner, typeId)
+	ctx.damage = TechState.divisionDamageBonus(owner, typeId)
 	if typeId == "Milice" then
 		ctx.factor = BalanceService.militiaFactor(owner)
 	end
-	-- traits du général
+	-- général : bonus de son niveau, bonus choisis et traits
 	local both = 0
 	if typeId == "Blindee" or typeId == "Mecanisee" then
 		both += Armies.bonus(d, "Blindes")
@@ -159,30 +193,30 @@ local function countryContext(d: Instance, ctx: Combat.Context, encircled: boole
 	end
 	if ctx.attacking then
 		ctx.attackBonus = (ctx.attackBonus :: number) + both + Armies.bonus(d, "attack") + (if encircled then Armies.bonus(d, "encirclement") else 0)
-		ctx.defenseBonus = (ctx.defenseBonus or 0) + both
+		ctx.defenseBonus = (ctx.defenseBonus or 0) + both + Armies.bonus(d, "defense") * 0.5
 	else
-		ctx.attackBonus = (ctx.attackBonus :: number) + both
+		ctx.attackBonus = (ctx.attackBonus :: number) + both + Armies.bonus(d, "attack") * 0.5
 		ctx.defenseBonus = (ctx.defenseBonus or 0) + both + Armies.bonus(d, "defense")
 	end
 	ctx.resilience = Armies.bonus(d, "morale")
-	-- bonus de planification (plan préparé avant l'attaque, divisions sous contrôle du plan)
-	if ctx.attacking then
-		ctx.attackBonus = (ctx.attackBonus :: number) + BattlePlans.bonus(d)
-	end
 	ctx.experience = (d:GetAttribute("Experience") :: number?) or 0
 	ctx.supplied = d:GetAttribute("Ravitaillee") ~= false
 	ctx.fuel = Stocks.get(owner, "Petrole") > 0
 	return ctx
 end
 
-local function unitOf(d: Instance, ctx: Combat.Context, encircled: boolean?): Combat.Unit
+local function unitOf(f: Fight, d: Instance, ctx: Combat.Context, encircled: boolean?): Combat.Unit
 	local u = Combat.makeUnit(d:GetAttribute("Type") :: string, {
 		id = d.Name,
 		org = (d:GetAttribute("Org") :: number?) or 0,
 		orgMax = (d:GetAttribute("OrgMax") :: number?) or 1,
 		str = (d:GetAttribute("Force") :: number?) or 0,
 	}, countryContext(d, ctx, encircled == true))
-	u.line = d:GetAttribute("EnLigne") == true
+	local memory = f.memory[d.Name]
+	if memory then
+		u.line = memory.line
+		u.target = memory.target
+	end
 	return u
 end
 
@@ -191,19 +225,21 @@ local function divisionExperience(d: Instance, amount: number)
 	Divisions.addExperience(d, amount * (1 + Armies.bonus(d, "experience")))
 end
 
--- Région amie voisine où une division vaincue peut reculer (nil : encerclée)
+-- Région amie voisine où une division vaincue peut reculer (nil : encerclée). Les soldats d'un
+-- général n'occupent pas de place : il suffit d'une région amie voisine.
 local function retreatTarget(d: Instance, regionId: string): string?
 	local owner = d:GetAttribute("Proprietaire") :: string
+	local absorbed = Armies.isAbsorbed(d)
 	local best: string? = nil
 	local bestScore = math.huge
 	for _, link in Regions[regionId].neighbors do
 		local to = link.region
 		local toOwner = RegionService.getOwner(to)
-		if link.bySea or not toOwner or isHostile(owner, toOwner) then
+		if link.bySea or not friendly(owner, toOwner) then
 			continue
 		end
 		local occupancy = Divisions.occupancy(to)
-		if occupancy >= Military.maxDivisionsPerRegion then
+		if not absorbed and occupancy >= Divisions.capacityOf(to) then
 			continue
 		end
 		-- de préférence une région calme et peu occupée
@@ -232,39 +268,60 @@ local function publish(f: Fight, attackers: { Instance }, defenders: { Instance 
 	b:SetAttribute("Defenseur", f.defender)
 	b:SetAttribute("Tick", f.ticks)
 	b:SetAttribute("Directions", table.concat(directions, ","))
-	b:SetAttribute("Largeur", Combat.width(terrainOf(f.region), math.max(1, #directions)))
+	b:SetAttribute("Largeur", CombatConfig.frontWidth)
 	b:SetAttribute("Riviere", river)
 	b:SetAttribute("NbAttaque", #attackers)
 	b:SetAttribute("NbDefense", #defenders)
+	b:SetAttribute("PertesAttaque", f.losses.attackers)
+	b:SetAttribute("PertesDefense", f.losses.defenders)
 	if battle then
+		local function inLine(units: { Combat.Unit }): number
+			local n = 0
+			for _, u in units do
+				if u.line and u.hp > 0 then
+					n += 1
+				end
+			end
+			return n
+		end
 		b:SetAttribute("OrgAttaque", Combat.orgRatio(battle.attackers))
 		b:SetAttribute("OrgDefense", Combat.orgRatio(battle.defenders))
+		b:SetAttribute("PVAttaque", Combat.healthRatio(battle.attackers))
+		b:SetAttribute("PVDefense", Combat.healthRatio(battle.defenders))
+		b:SetAttribute("EnLigneAttaque", inLine(battle.attackers))
+		b:SetAttribute("EnLigneDefense", inLine(battle.defenders))
 	end
 end
 
--- Plan de bataille (SYSTEME_MILITAIRE.md, 4.4 : ne pas dégarnir le front) : une division du plan
--- qui serait la dernière à tenir sa région, encore au contact d'un ennemi, n'avance pas
-local function lastHolder(d: Instance, captured: string): boolean
-	if d:GetAttribute("Controle") ~= "Plan" then
-		return false
+-- Un soldat tombé (0 PV) : il se replie avec retreatHealth de ses PV, ou meurt sans région amie
+-- voisine. Un attaquant est déjà dans une région amie voisine (la sienne) ; un soldat d'un général
+-- reste dans son armée.
+local function fallen(f: Fight, d: Instance, attacking: boolean)
+	if not d.Parent then
+		return
 	end
-	local here = d:GetAttribute("Region") :: string
-	local owner = d:GetAttribute("Proprietaire") :: string
-	local others = 0
-	for _, other in Divisions.inRegion(here) do
-		if other ~= d and not Divisions.isMoving(other) and other:GetAttribute("Proprietaire") == owner then
-			others += 1
-		end
+	local health = CombatConfig.retreatHealth * 100
+	if attacking then
+		f.attackers[d] = nil
+		release(d)
+		d:SetAttribute("Force", health)
+		d:SetAttribute("AttaqueContinue", nil)
+		return
 	end
-	if others > 0 then
-		return false
+	local to = retreatTarget(d, f.region)
+	if not to then
+		release(d)
+		Armies.casualty(d) -- l'armée d'un général peut être anéantie
+		Divisions.destroy(d) -- encerclé : il meurt
+		return
 	end
-	for _, link in Regions[here].neighbors do
-		if not link.bySea and link.region ~= captured and isHostile(owner, RegionService.getOwner(link.region)) then
-			return true
-		end
+	release(d)
+	d:SetAttribute("Force", health)
+	if Armies.isAbsorbed(d) then
+		f.out[d] = true -- blessé, à l'arrière de l'armée de son général
+	else
+		Movement.retreat(d, to)
 	end
-	return false
 end
 
 -- Fin de bataille. result : "Victoire" (la région est prise) ou "Repli" (l'attaque a échoué)
@@ -286,9 +343,21 @@ local function finish(f: Fight, result: string)
 	end
 	f.folder:SetAttribute("Etat", result)
 	local E = Military.experience
+	local G = Military.generals
+	local generals: { [Instance]: boolean } = {} -- généraux des attaquants
+	for _, d in attackers do
+		local general = Armies.commanderOf(d)
+		if general then
+			generals[general] = true
+		end
+	end
 	if result == "Victoire" then
-		-- le défenseur recule vers une région amie voisine, ou il est détruit (encerclé)
+		-- le défenseur recule vers une région amie voisine, ou il est détruit (encerclé) ; les
+		-- armées des généraux reculent avec leur général (Armies, au changement de propriétaire)
 		for _, d in defenders do
+			if Armies.isAbsorbed(d) then
+				continue
+			end
 			local to = retreatTarget(d, f.region)
 			if to then
 				Movement.retreat(d, to)
@@ -296,7 +365,7 @@ local function finish(f: Fight, result: string)
 				Divisions.destroy(d)
 			end
 		end
-		-- la région change de mains : celui qui a lancé l'attaque, s'il y est encore
+		-- la région change de mains tout de suite : celui qui a lancé l'attaque, s'il y est encore
 		local winner = f.attacker
 		local stillThere = false
 		for _, d in attackers do
@@ -308,37 +377,50 @@ local function finish(f: Fight, result: string)
 			winner = attackers[1]:GetAttribute("Proprietaire") :: string
 		end
 		Movement.capture(f.region, winner)
-		-- les attaquants entrent dans la région (les plus organisés d'abord, 10 au plus)
+		-- les vainqueurs avancent dans la région prise : les généraux avec toute leur armée, les
+		-- autres divisions jusqu'à la limite de stationnement (les plus organisées d'abord)
+		for general in generals do
+			Armies.addExperience(general, G.xpVictory + G.xpRegion)
+			Armies.advance(general, f.region)
+		end
 		table.sort(attackers, function(a: Instance, b: Instance): boolean
 			return ((a:GetAttribute("Org") :: number?) or 0) > ((b:GetAttribute("Org") :: number?) or 0)
 		end)
-		local advanced = 0
 		for _, d in attackers do
 			divisionExperience(d, E.victory)
-			if ((d:GetAttribute("Org") :: number?) or 0) > 0 and (advanced == 0 or not lastHolder(d, f.region)) then
+			if Armies.isAbsorbed(d) then
+				continue
+			end
+			if Divisions.occupancy(f.region) < Divisions.capacityOf(f.region) then
 				Movement.advance(d, f.region)
-				advanced += 1
+			else
+				d:SetAttribute("AttaqueContinue", nil) -- plus de place : l'offensive s'arrête là pour elle
 			end
 		end
 	else
 		-- l'attaque a échoué : les attaquants restent chez eux, la suite de leur route est annulée
 		for _, d in attackers do
 			d:SetAttribute("Itineraire", nil)
+			d:SetAttribute("AttaqueContinue", nil)
+		end
+		for general in generals do
+			Armies.stopOffensive(general)
 		end
 		for _, d in defenders do
 			divisionExperience(d, E.victory)
 		end
-	end
-	-- généraux des vainqueurs : expérience
-	local winners = if result == "Victoire" then attackers else defenders
-	local credited: { [Instance]: boolean } = {}
-	for _, d in winners do
-		local general = Armies.get(d:GetAttribute("Armee"))
-		if general and not credited[general] then
-			credited[general] = true
-			Armies.addExperience(general, Military.generals.xpVictory)
+		-- généraux des défenseurs : expérience
+		local credited: { [Instance]: boolean } = {}
+		for _, d in defenders do
+			local general = Armies.commanderOf(d)
+			if general and not credited[general] then
+				credited[general] = true
+				Armies.addExperience(general, G.xpVictory)
+			end
 		end
 	end
+	-- les blessés des armées des généraux reprennent leur place
+	table.clear(f.out)
 	BattleService.reportResult(result, f.attacker, f.defender, f.region, nil)
 	local battleFolder = f.folder
 	task.delay(Military.combat.resultDelay, function()
@@ -353,8 +435,8 @@ local function tickFight(f: Fight)
 	if owner and owner ~= f.defender then
 		f.defender = owner
 	end
-	if CouncilState.ceasefireLeft() > 0 then
-		finish(f, "Repli") -- cessez-le-feu du Conseil mondial : les combats s'arrêtent
+	if CouncilState.ceasefireLeft() > 0 or DiplomacyService.truceLeft(f.attacker, f.defender) > 0 then
+		finish(f, "Repli") -- cessez-le-feu ou trêve : les combats s'arrêtent
 		return
 	end
 	local attackers = attackersOf(f)
@@ -382,9 +464,7 @@ local function tickFight(f: Fight)
 	local region = regionFolder(f.region)
 	local fortification = (region and region:GetAttribute("Fortification") :: number?) or 0
 	local units: { [string]: Instance } = {}
-	local battle: Combat.Battle = { attackers = {}, defenders = {}, width = 0 }
-	local directions: { [string]: boolean } = {}
-	local count = 0
+	local battle: Combat.Battle = { attackers = {}, defenders = {}, width = CombatConfig.frontWidth, elapsed = f.elapsed, sides = f.sides }
 	-- soutien aérien : escadrilles des deux camps au-dessus de la région (AirSupport)
 	local attackerFighters, attackerSupport = AirSupport.cover(f.region, f.attacker)
 	local defenderFighters, defenderSupport = AirSupport.cover(f.region, f.defender)
@@ -398,11 +478,7 @@ local function tickFight(f: Fight)
 	end
 	for _, d in attackers do
 		local from = f.attackers[d]
-		if not directions[from] then
-			directions[from] = true
-			count += 1
-		end
-		table.insert(battle.attackers, unitOf(d, {
+		table.insert(battle.attackers, unitOf(f, d, {
 			attacking = true,
 			terrain = terrain,
 			river = riverBetween(from, f.region),
@@ -412,7 +488,7 @@ local function tickFight(f: Fight)
 		units[d.Name] = d
 	end
 	for _, d in defenders do
-		table.insert(battle.defenders, unitOf(d, {
+		table.insert(battle.defenders, unitOf(f, d, {
 			attacking = false,
 			terrain = terrain,
 			entrenchment = (d:GetAttribute("Retranchement") :: number?) or 0,
@@ -422,53 +498,44 @@ local function tickFight(f: Fight)
 		}))
 		units[d.Name] = d
 	end
-	battle.width = Combat.width(terrain, count)
 
 	local after, report = Combat.resolveTick(battle)
-	-- appui au sol : de l'organisation en moins pour la ligne ennemie (le combat a pu se jouer là)
+	f.elapsed = after.elapsed or (f.elapsed + CombatConfig.tickSeconds)
+	f.sides = after.sides
+	-- appui au sol : du moral en moins pour la ligne ennemie (Config/Military.air.supportDamage par seconde)
 	if report.result == "EnCours" then
-		AirSupport.applyDamage(after.defenders, air.damageToDefenders)
-		AirSupport.applyDamage(after.attackers, air.damageToAttackers)
-		local function standing(list: { Combat.Unit }): boolean
-			for _, u in list do
-				if u.org > 0 then
-					return true
-				end
-			end
-			return false
-		end
-		if not standing(after.defenders) and standing(after.attackers) then
-			report.result = "Victoire"
-		elseif not standing(after.attackers) then
-			report.result = "Repli"
-		end
+		AirSupport.applyDamage(after.defenders, air.damageToDefenders * CombatConfig.tickSeconds)
+		AirSupport.applyDamage(after.attackers, air.damageToAttackers * CombatConfig.tickSeconds)
 	end
 	f.folder:SetAttribute("Superiorite", air.superiority)
 	f.folder:SetAttribute("AppuiAttaque", attackerSupport > 0)
 	f.folder:SetAttribute("AppuiDefense", defenderSupport > 0)
 	f.ticks += 1
-	-- nouvel état des divisions ; pertes de force -> stabilité du pays
+	-- nouvel état des divisions (PV, moral, ligne, cible) ; pertes de PV -> stabilité du pays
 	local casualties: { [string]: number } = {}
 	local commanders: { [Instance]: boolean } = {}
-	local planners: { [Instance]: boolean } = {}
-	for _, list in { after.attackers, after.defenders } do
+	local function sync(list: { Combat.Unit })
 		for _, u in list do
 			local d = units[u.id]
 			if not d or not d.Parent then
 				continue
 			end
+			f.memory[u.id] = { line = u.line, target = u.target }
 			d:SetAttribute("Org", u.org)
-			d:SetAttribute("Force", u.str)
-			d:SetAttribute("EnLigne", u.line)
+			if report.strLost[u.id] then
+				d:SetAttribute("Force", u.str)
+			end
+			if d:GetAttribute("EnLigne") ~= u.line then
+				d:SetAttribute("EnLigne", u.line)
+			end
+			if d:GetAttribute("Cible") ~= u.target then
+				d:SetAttribute("Cible", u.target)
+			end
 			if u.line then
-				divisionExperience(d, Military.experience.perCombatTick)
-				local general = Armies.get(d:GetAttribute("Armee"))
+				divisionExperience(d, Military.experience.perCombatTick * CombatConfig.tickSeconds / Military.tickSeconds)
+				local general = Armies.commanderOf(d)
 				if general then
 					commanders[general] = true
-					-- le plan sert : son bonus diminue à chaque tick d'attaque
-					if f.attackers[d] and d:GetAttribute("Controle") == "Plan" then
-						planners[general] = true
-					end
 				end
 			end
 			local lost = report.strLost[u.id]
@@ -478,30 +545,34 @@ local function tickFight(f: Fight)
 			end
 		end
 	end
+	sync(after.attackers)
+	sync(after.defenders)
 	for country, lost in casualties do
 		Stability.casualties(country, lost / FORCE_PER_CASUALTY)
 	end
 	-- les généraux apprennent en commandant
 	for general in commanders do
-		Armies.addExperience(general, Military.generals.xpPerTick)
+		Armies.addExperience(general, Military.generals.xpPerTick * CombatConfig.tickSeconds / Military.tickSeconds)
 	end
-	for general in planners do
-		BattlePlans.spendPlanning(general)
-	end
-	-- divisions anéanties (plus de force du tout)
-	for _, list in { after.attackers, after.defenders } do
-		for _, u in list do
-			local d = units[u.id]
-			if d and d.Parent and u.str <= 0 then
-				release(d)
-				f.attackers[d] = nil
-				Divisions.destroy(d)
+	-- soldats tombés : repli avec 25 % de PV, ou mort
+	for id in report.down do
+		local d = units[id]
+		if d then
+			local attacking = f.attackers[d] ~= nil
+			if attacking then
+				f.losses.attackers += 1
+			else
+				f.losses.defenders += 1
 			end
+			f.memory[id] = nil
+			fallen(f, d, attacking)
 		end
 	end
 	publish(f, attackersOf(f), defendersOf(f), after)
-	-- prévision du vainqueur (un tick sur deux : c'est une petite simulation)
-	if f.ticks % 2 == 1 then
+	-- prévision du vainqueur (une petite simulation, de temps en temps)
+	if f.ticks % ESTIMATE_EVERY == 1 then
+		after.attackers = Combat.withoutDown(after.attackers)
+		after.defenders = Combat.withoutDown(after.defenders)
 		local predicted = Combat.estimate(after, ESTIMATE_TICKS)
 		f.folder:SetAttribute("Prevision", if predicted == "Victoire" then "Attaquant" elseif predicted == "Repli" then "Defenseur" else "Indecis")
 	end
@@ -510,7 +581,8 @@ local function tickFight(f: Fight)
 	end
 end
 
--- Engage une division contre une région ennemie défendue (appelé par Movement)
+-- Engage une division contre une région ennemie défendue (appelé par Movement, attackRegion et
+-- Armies). from : la région d'où elle attaque (la sienne, voisine de la cible)
 function BattleManager.attack(d: Instance, from: string, target: string): (boolean, string?)
 	if not d.Parent or Divisions.isTraining(d) or not folder then
 		return false, "Cette division n'est pas prête."
@@ -526,7 +598,10 @@ function BattleManager.attack(d: Instance, from: string, target: string): (boole
 		BattleManager.withdraw(d)
 	end
 	if ((d:GetAttribute("Org") :: number?) or 0) <= 0 then
-		return false, "Organisation à zéro : la division doit d'abord se reposer."
+		return false, "Moral à zéro : la division doit d'abord se reposer."
+	end
+	if ((d:GetAttribute("Force") :: number?) or 0) < 5 then
+		return false, "Division trop affaiblie : elle doit d'abord se renforcer."
 	end
 	local countryId = d:GetAttribute("Proprietaire") :: string
 	local defender = RegionService.getOwner(target)
@@ -534,6 +609,9 @@ function BattleManager.attack(d: Instance, from: string, target: string): (boole
 		return false, "Pas en guerre avec ce pays."
 	end
 	local f = fights[target]
+	if f and isHostile(countryId, f.attacker) then
+		return false, "Une autre bataille est déjà en cours dans cette région."
+	end
 	if not f then
 		nextId += 1
 		local battleFolder = Instance.new("Folder")
@@ -544,7 +622,7 @@ function BattleManager.attack(d: Instance, from: string, target: string): (boole
 		battleFolder:SetAttribute("Etat", "EnCours")
 		battleFolder:SetAttribute("Genre", "Terre")
 		battleFolder:SetAttribute("Raid", false)
-		battleFolder:SetAttribute("Debut", workspace:GetServerTimeNow())
+		battleFolder:SetAttribute("Debut", now())
 		battleFolder:SetAttribute("Terrain", terrainOf(target))
 		battleFolder:SetAttribute("Prevision", "Indecis")
 		local created: Fight = {
@@ -554,8 +632,13 @@ function BattleManager.attack(d: Instance, from: string, target: string): (boole
 			attacker = countryId,
 			defender = defender,
 			attackers = {},
+			out = {},
+			memory = {},
+			elapsed = 0,
+			sides = nil,
 			ticks = 0,
-			started = workspace:GetServerTimeNow(),
+			losses = { attackers = 0, defenders = 0 },
+			started = now(),
 		}
 		f = created
 		fights[target] = created
@@ -570,9 +653,9 @@ function BattleManager.attack(d: Instance, from: string, target: string): (boole
 	engage(fight, d)
 	d:SetAttribute("EnLigne", false)
 	d:SetAttribute("Retranchement", 0) -- elle quitte ses positions pour attaquer
-	for _, defender in defendersOf(fight) do
-		if not engaged[defender] then
-			engage(fight, defender)
+	for _, d2 in defendersOf(fight) do
+		if not engaged[d2] then
+			engage(fight, d2)
 		end
 	end
 	publish(fight, attackersOf(fight), defendersOf(fight), nil)
@@ -588,8 +671,155 @@ function BattleManager.withdraw(d: Instance)
 	end
 end
 
+-- Divisions prêtes à attaquer `target` depuis les régions voisines (par la terre) qui sont à
+-- `countryId` : à l'arrêt, prêtes, hors de l'armée d'un général, sans bataille de défense, avec
+-- du moral et des PV. only : seulement ces divisions (attaque continue)
+function BattleManager.readyAttackers(countryId: string, target: string, only: { [Instance]: boolean }?): { { d: Instance, from: string } }
+	local list = {}
+	local region = Regions[target]
+	if not region then
+		return list
+	end
+	for _, link in region.neighbors do
+		local from = link.region
+		if link.bySea or RegionService.getOwner(from) ~= countryId then
+			continue
+		end
+		for _, d in Divisions.inRegion(from) do
+			if only and not only[d] then
+				continue
+			end
+			-- une division qui défend sa région, ou qui attaque déjà ailleurs, reste à sa bataille
+			local current = engaged[d]
+			if d:GetAttribute("Proprietaire") ~= countryId or Divisions.isTraining(d) or Divisions.isMoving(d)
+				or Armies.isAbsorbed(d) or (current and (current.attackers[d] == nil or current.region ~= target)) then
+				continue
+			end
+			if ((d:GetAttribute("Org") :: number?) or 0) <= 0 or ((d:GetAttribute("Force") :: number?) or 0) < 5 then
+				continue
+			end
+			table.insert(list, { d = d, from = from })
+		end
+	end
+	return list
+end
+
+-- Attaque d'une région ennemie depuis toutes ses régions voisines (bouton « Attaquer » de la fiche
+-- de région, IA). continuous : les divisions enchaînent ensuite les régions voisines.
+-- Renvoie le nombre de divisions engagées.
+function BattleManager.attackRegion(countryId: string, target: unknown, continuous: boolean?, only: { [Instance]: boolean }?): (boolean, string?, number)
+	if typeof(target) ~= "string" or not Regions[target] then
+		return false, "Région inconnue.", 0
+	end
+	local owner = RegionService.getOwner(target)
+	if not owner or not isHostile(countryId, owner) then
+		return false, "Cette région n'est pas ennemie.", 0
+	end
+	if not DiplomacyService.atWar(countryId, owner) then
+		return false, "Pas en guerre avec ce pays : déclare-lui d'abord la guerre.", 0
+	end
+	local ceasefire = CouncilState.ceasefireLeft()
+	if ceasefire > 0 then
+		return false, `Cessez-le-feu du Conseil mondial : encore {math.ceil(ceasefire)} s.`, 0
+	end
+	local ready = BattleManager.readyAttackers(countryId, target, only)
+	if #ready == 0 then
+		return false, "Aucune division prête dans tes régions voisines de celle-ci.", 0
+	end
+	local sent = 0
+	local lastError: string? = nil
+	for _, entry in ready do
+		local ok, why = BattleManager.attack(entry.d, entry.from, target)
+		if ok then
+			sent += 1
+			entry.d:SetAttribute("Itineraire", nil)
+			entry.d:SetAttribute("Controle", "Manuel")
+			entry.d:SetAttribute("AttaqueContinue", if continuous then true else nil)
+		else
+			lastError = why
+		end
+	end
+	if sent == 0 then
+		return false, lastError or "Aucune division n'a pu attaquer.", 0
+	end
+	return true, nil, sent
+end
+
+-- Prochaine cible d'une offensive continue depuis `from` : la région ennemie voisine (en guerre,
+-- par la terre) la moins défendue
+function BattleManager.nextTarget(countryId: string, from: string): string?
+	local best: string? = nil
+	local bestScore = math.huge
+	for _, link in Regions[from].neighbors do
+		local owner = RegionService.getOwner(link.region)
+		if link.bySea or not owner or not isHostile(countryId, owner) or not DiplomacyService.atWar(countryId, owner) then
+			continue
+		end
+		local other = fights[link.region]
+		if other and isHostile(countryId, other.attacker) then
+			continue
+		end
+		local score = #Movement.defenders(link.region, countryId)
+		if score < bestScore or (score == bestScore and best and link.region < best) then
+			best, bestScore = link.region, score
+		end
+	end
+	return best
+end
+
+-- Attaque continue des divisions (pas des généraux : voir Armies) : celles qui ont avancé dans une
+-- région prise attaquent la région ennemie voisine suivante, tant qu'elles ont des effectifs et
+-- du moral ; sinon l'offensive s'arrête
+local function continueOffensives()
+	if CouncilState.ceasefireLeft() > 0 then
+		return
+	end
+	local C = CombatConfig.continuous
+	local groups: { [string]: { country: string, region: string, list: { Instance } } } = {}
+	for _, d in Divisions.all() do
+		if d:GetAttribute("AttaqueContinue") ~= true or Armies.isAbsorbed(d) or engaged[d] or Divisions.isMoving(d) or Divisions.isTraining(d) then
+			continue
+		end
+		local arrived = (d:GetAttribute("Arrivee") :: number?) or 0
+		if now() - arrived < C.delay then
+			continue
+		end
+		local country = d:GetAttribute("Proprietaire") :: string
+		local regionId = d:GetAttribute("Region") :: string
+		local key = country .. "|" .. regionId
+		local group = groups[key]
+		if not group then
+			group = { country = country, region = regionId, list = {} }
+			groups[key] = group
+		end
+		table.insert(group.list, d)
+	end
+	for _, group in groups do
+		local org, orgMax = 0, 0
+		for _, d in group.list do
+			org += (d:GetAttribute("Org") :: number?) or 0
+			orgMax += (d:GetAttribute("OrgMax") :: number?) or 1
+		end
+		local target = BattleManager.nextTarget(group.country, group.region)
+		local ok = false
+		if target and #group.list >= C.minDivisions and orgMax > 0 and org / orgMax >= C.minOrganisation then
+			local only: { [Instance]: boolean } = {}
+			for _, d in group.list do
+				only[d] = true
+			end
+			ok = (BattleManager.attackRegion(group.country, target, true, only))
+		end
+		if not ok then
+			-- plus de cible, d'effectifs ou de moral : l'offensive s'arrête
+			for _, d in group.list do
+				d:SetAttribute("AttaqueContinue", nil)
+			end
+		end
+	end
+end
+
 -- Toutes les batailles avancent d'un tick
-local function update()
+local function update(dt: number)
 	local list = {}
 	for _, f in fights do
 		table.insert(list, f)
@@ -603,6 +833,14 @@ local function update()
 			end
 		end
 	end
+	continueClock += dt
+	if continueClock >= CONTINUE_CHECK then
+		continueClock = 0
+		local ok, err = pcall(continueOffensives)
+		if not ok then
+			warn(`[Batailles] attaque continue : {err}`)
+		end
+	end
 end
 
 -- Nouvelle partie : plus aucune bataille (le dossier EtatMonde.Batailles est vidé par BattleService)
@@ -611,23 +849,39 @@ function BattleManager.reset()
 	table.clear(engaged)
 end
 
--- À appeler après BattleService.init(), Divisions.init() et Movement.init()
-function BattleManager.init(loop: any)
+-- À appeler après BattleService.init(), Divisions.init(), Movement.init() et Armies.init()
+function BattleManager.init(loop: any, commands: any)
 	folder = ReplicatedStorage:WaitForChild("EtatMonde"):WaitForChild("Batailles")
-	loop.every("batailles", Military.tickSeconds, update)
+	loop.every("batailles", CombatConfig.tickSeconds, update)
 	Movement.setBattleHooks({
 		attack = BattleManager.attack,
 		withdraw = BattleManager.withdraw,
 		isAttacking = BattleManager.isAttacking,
+	})
+	Armies.setBattleHooks({
+		attack = BattleManager.attack,
+		withdraw = BattleManager.withdraw,
+		nextTarget = BattleManager.nextTarget,
+		isFighting = BattleManager.isFighting,
 	})
 	-- une division détruite quitte sa bataille
 	Divisions.onRemoved(function(d: Instance)
 		local f = engaged[d]
 		if f then
 			f.attackers[d] = nil
+			f.out[d] = nil
+			f.memory[d.Name] = nil
 			engaged[d] = nil
 		end
 	end)
+	-- AttaquerRegion { region, continu } : toutes ses divisions des régions voisines attaquent
+	commands.register("AttaquerRegion", function(countryId: string, data: { [any]: any }): (boolean, string?)
+		local ok, message, sent = BattleManager.attackRegion(countryId, data.region, data.continu == true)
+		if ok then
+			return true, `{sent} division{if sent > 1 then "s" else ""} à l'attaque{if data.continu == true then " (attaque continue)" else ""}.`
+		end
+		return false, message
+	end, "DeplacerArmee")
 end
 
 return BattleManager

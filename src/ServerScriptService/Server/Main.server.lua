@@ -31,8 +31,6 @@ local BattleManager = require(Military:WaitForChild("BattleManager"))
 local Fortifications = require(Military:WaitForChild("Fortifications"))
 local Supply = require(Military:WaitForChild("Supply"))
 local Armies = require(Military:WaitForChild("Armies"))
-local BattlePlans = require(Military:WaitForChild("BattlePlans"))
-local GeneralAI = require(Military:WaitForChild("GeneralAI"))
 local AIService = require(script.Parent:WaitForChild("AI"):WaitForChild("AIService"))
 local BalanceService = require(script.Parent:WaitForChild("Politics"):WaitForChild("BalanceService"))
 local NewsService = require(script.Parent:WaitForChild("News"):WaitForChild("NewsService"))
@@ -79,12 +77,10 @@ ResearchService.init() -- arbre technologique
 -- Militaire terrestre façon Hearts of Iron (SYSTEME_MILITAIRE.md) : divisions, boucle centrale
 Divisions.init(MilitaryLoop)
 Commands.init() -- ordres des joueurs : un seul RemoteEvent CommandeMilitaire
-Armies.init(MilitaryLoop, Commands) -- généraux : nomination, armées de 24 divisions, traits
-BattlePlans.init(MilitaryLoop, Commands) -- plans de bataille : front, offensive, repli, planification
-GeneralAI.init(MilitaryLoop) -- les généraux exécutent leurs plans (répartition, attaques, repos)
+Armies.init(MilitaryLoop, Commands) -- généraux : une armée qui absorbe ses troupes (cahier v2, section 5)
 Movement.init(MilitaryLoop, Commands) -- déplacements de région en région (10 divisions au plus par région)
 BattleService.init() -- raids aériens et navals ; dossier EtatMonde.Batailles
-BattleManager.init(MilitaryLoop) -- batailles terrestres : ticks de combat (Combat, fonctions pures)
+BattleManager.init(MilitaryLoop, Commands) -- batailles terrestres : un tick de 0,5 s par bataille (Combat, fonctions pures)
 Fortifications.init(MilitaryLoop, Commands) -- fortifications des régions (ordre « Fortifier »)
 Supply.init(MilitaryLoop) -- ravitaillement, encerclement, attrition, nourriture et pétrole des divisions
 ArmyService.init()

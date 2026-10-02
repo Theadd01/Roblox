@@ -1,20 +1,22 @@
 --!strict
--- IA militaire des pays sans joueur (SYSTEME_MILITAIRE.md, section 8) : elle utilise exactement les
--- outils du joueur (recruter des divisions, nommer des généraux, leur donner un front et une ligne
--- offensive, lancer l'offensive, fortifier), sans tricher sur les règles.
---   housekeeping (à chaque tour, sans coût) : divisions placées sous les ordres des généraux,
---     front de chaque général (face à un ennemi en guerre, sinon au voisin le plus menaçant),
---     quartier général près de son front, objectifs d'offensive en temps de guerre ; sans
---     général, ses divisions libres vont vers la région frontalière la plus menacée ;
+-- IA militaire des pays sans joueur (SYSTEME_MILITAIRE.md, section 8 ; cahier des charges v2) : elle
+-- utilise exactement les outils du joueur (recruter des divisions, acheter des généraux et leur
+-- rattacher des troupes, attaquer une région depuis toutes ses régions voisines, lancer un général
+-- en offensive continue, fortifier), sans tricher sur les règles. Elle ne propose jamais de trêve,
+-- de paix ni d'événement mondial (seuls les joueurs le font : VoteService).
+--   housekeeping (à chaque tour, sans coût) : ses divisions libres vont vers la région frontalière
+--     la plus menacée ; ses généraux reçoivent les divisions en surplus (une garnison reste sur
+--     chaque région frontalière) et choisissent leurs bonus de niveau ;
 --   actions notées (CountryBrain) :
 --     Defense : recruter (une division par région frontalière, plus selon la guerre et la
---       personnalité), nommer un général (un pour divisionsPerGeneral divisions), fortifier une
+--       personnalité), acheter un général (un pour divisionsPerGeneral divisions), fortifier une
 --       région frontalière menacée ;
---     Attaque : lancer l'offensive d'un général quand son armée est landAttackRatio fois plus
---       forte que l'ennemi en face et que son plan est prêt (planification), déclarer la guerre
---       à un voisin faible (rythme mondial : Config/AI.firstAttackDelay, offensiveInterval...).
+--     Attaque : en guerre, attaquer la région ennemie voisine la plus faible quand ses divisions
+--       voisines sont landAttackRatio fois plus fortes ; lancer un général en offensive continue ;
+--       déclarer la guerre à un voisin faible (rythme mondial : Config/AI.firstAttackDelay,
+--       offensiveInterval...).
 -- worstDanger : la pire menace sur une de ses régions (au-dessus de 1 : mal défendue), utilisée
--- par DiplomacyAI pour chercher des alliés ou la paix.
+-- par DiplomacyAI pour chercher des alliés.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -26,6 +28,7 @@ local Resources = require(Config:WaitForChild("Resources")) :: any
 local DivisionConfig = require(Config:WaitForChild("Divisions")) :: any
 local Countries = require(Config:WaitForChild("Countries")) :: any
 local MilitaryConfig = require(Config:WaitForChild("Military")) :: any
+local CombatConfig = require(Config:WaitForChild("CombatConfig")) :: any
 local Terrain = require(Config:WaitForChild("Terrain")) :: any
 local RegionTerrain = require(Config:WaitForChild("RegionTerrain")) :: any
 local CouncilState = require(Shared:WaitForChild("CouncilState")) :: any
@@ -41,7 +44,7 @@ local ArmyService = require(Military:WaitForChild("ArmyService"))
 local Divisions = require(Military:WaitForChild("Divisions"))
 local Movement = require(Military:WaitForChild("Movement"))
 local Armies = require(Military:WaitForChild("Armies"))
-local BattlePlans = require(Military:WaitForChild("BattlePlans"))
+local BattleManager = require(Military:WaitForChild("BattleManager"))
 local Fortifications = require(Military:WaitForChild("Fortifications"))
 local DiplomacyService = require(Server:WaitForChild("Politics"):WaitForChild("DiplomacyService"))
 local Stability = require(Server:WaitForChild("Politics"):WaitForChild("Stability"))
@@ -83,11 +86,13 @@ local function orgRatio(d: Instance): number
 	return org / orgMax
 end
 
--- Force estimée d'une division (attaque et défense, selon son organisation et sa force)
+local BASE_VALUE = math.sqrt(CombatConfig.stats(nil).health * CombatConfig.stats(nil).dps)
+
+-- Force estimée d'une division (PV x DPS de son type, selon son moral et ses PV restants)
 local function strengthOf(d: Instance): number
-	local t = Divisions.typeOf(d)
+	local stats = CombatConfig.stats(d:GetAttribute("Type") :: string)
 	local force = ((d:GetAttribute("Force") :: number?) or 0) / 100
-	return (t.soft + t.hard + 0.5 * (t.defense + t.breakthrough)) * (0.4 + 0.6 * orgRatio(d)) * force
+	return math.sqrt(stats.health * stats.dps) / BASE_VALUE * (0.4 + 0.6 * orgRatio(d)) * force
 end
 
 local function friendly(countryId: string, owner: string?): boolean
@@ -254,65 +259,35 @@ end
 
 -- ---- Housekeeping : réglages sans coût, à chaque tour -------------------------------------------
 
--- Pays voisin (par la terre) le plus menaçant, en dehors de ses alliés
-local function mostThreatening(s: Situation): string?
-	local best, bestThreat = nil, 0
-	local seen: { [string]: number } = {}
-	for _, regionId in s.border do
-		for _, link in Regions[regionId].neighbors do
-			local owner = RegionService.getOwner(link.region)
-			if not link.bySea and owner and not friendly(s.countryId, owner) then
-				seen[owner] = (seen[owner] or 0) + regionStrength(link.region, owner)
-			end
-		end
-	end
-	for owner, threat in seen do
-		if threat > bestThreat or not best then
-			best, bestThreat = owner, threat
-		end
-	end
-	return best
-end
-
--- Une région du pays `enemy` qui touche ses régions (pour lui donner un front)
-local function borderRegionOf(s: Situation, enemy: string): string?
-	for _, regionId in s.border do
-		for _, link in Regions[regionId].neighbors do
-			if not link.bySea and RegionService.getOwner(link.region) == enemy then
-				return link.region
-			end
-		end
-	end
-	return nil
-end
-
--- Objectifs d'une offensive : les régions ennemies voisines du front les plus faibles, et sa
--- capitale si elle est proche
-local function chooseObjectives(s: Situation, general: Instance, enemy: string)
-	local candidates: { [string]: number } = {}
-	for _, regionId in BattlePlans.list(general, "Front") do
-		for _, link in Regions[regionId].neighbors do
-			if not link.bySea and RegionService.getOwner(link.region) == enemy then
-				candidates[link.region] = regionStrength(link.region, enemy)
-			end
-		end
-	end
+-- Divisions libres (hors armée d'un général), à l'arrêt et hors bataille
+local function idleDivisions(s: Situation): { Instance }
 	local list = {}
-	for regionId, strength in candidates do
-		table.insert(list, { id = regionId, strength = strength - (if regionId == enemy then 5 else 0) })
-	end
-	table.sort(list, function(a: any, b: any): boolean
-		if a.strength ~= b.strength then
-			return a.strength < b.strength
+	for _, d in s.divisions do
+		if not Divisions.isAbsorbed(d) and not Divisions.isMoving(d) and not Divisions.inBattle(d) then
+			table.insert(list, d)
 		end
-		return a.id < b.id
-	end)
-	for i, entry in list do
-		if i > s.P.offensiveDepth then
-			break
-		end
-		BattlePlans.toggleObjective(s.countryId, general.Name, entry.id)
 	end
+	return list
+end
+
+-- Divisions libres en surplus : une garnison reste sur chaque région frontalière
+-- (Config/AI.garrisonPerBorder), les autres peuvent rejoindre l'armée d'un général
+local function spareDivisions(s: Situation): { Instance }
+	local border: { [string]: boolean } = {}
+	for _, regionId in s.border do
+		border[regionId] = true
+	end
+	local kept: { [string]: number } = {}
+	local spare = {}
+	for _, d in idleDivisions(s) do
+		local regionId = d:GetAttribute("Region") :: string
+		if border[regionId] and (kept[regionId] or 0) < s.P.garrisonPerBorder then
+			kept[regionId] = (kept[regionId] or 0) + 1
+		else
+			table.insert(spare, d)
+		end
+	end
+	return spare
 end
 
 function MilitaryAI.housekeeping(countryId: string)
@@ -330,69 +305,31 @@ function MilitaryAI.housekeeping(countryId: string)
 	if #s.regions == 0 then
 		return
 	end
-	-- 1. sans général : ses divisions libres vont vers la région frontalière la plus menacée
-	if #s.generals == 0 then
-		local target = byDanger(s)[1]
-		if target and dangerOf(s, target) > 0 then
-			for _, d in s.divisions do
-				if not Divisions.isMoving(d) and not Divisions.inBattle(d) and d:GetAttribute("Region") ~= target
-					and dangerOf(s, d:GetAttribute("Region") :: string) < 0.5 then
-					Movement.order(countryId, { d }, target)
-					break -- une à la fois : le front se garnit peu à peu
-				end
+	-- 1. ses divisions libres vont vers la région frontalière la plus menacée (une à la fois : le
+	-- front se garnit peu à peu)
+	local target = byDanger(s)[1]
+	if target and dangerOf(s, target) > 0 then
+		for _, d in idleDivisions(s) do
+			if d:GetAttribute("Region") ~= target and dangerOf(s, d:GetAttribute("Region") :: string) < 0.5 then
+				Movement.order(countryId, { d }, target)
+				break
 			end
 		end
-		return
 	end
-	-- 2. divisions sans général : au général qui en a le moins
-	for _, d in s.divisions do
-		if d:GetAttribute("Armee") == "" or Armies.get(d:GetAttribute("Armee")) == nil then
-			local best, bestCount = nil, math.huge
-			for _, g in s.generals do
-				local count = #Armies.divisionsOf(g)
-				if count < bestCount and count < MilitaryConfig.maxDivisionsPerArmy then
-					best, bestCount = g, count
-				end
-			end
-			if best then
-				Armies.assign(countryId, best.Name, { d })
-			end
-		elseif d:GetAttribute("Controle") ~= "Plan" then
-			d:SetAttribute("Controle", "Plan") -- l'IA ne garde pas de divisions en contrôle manuel
-		end
-	end
-	-- 3. fronts : contre les ennemis en guerre (un général chacun, à tour de rôle), sinon face au
-	-- voisin le plus menaçant
-	local enemies = {}
-	for _, enemy in s.enemies do
-		if borderRegionOf(s, enemy) then
-			table.insert(enemies, enemy)
-		end
-	end
-	local neighbor = mostThreatening(s)
+	-- 2. généraux : bonus de niveau, puis les divisions en surplus rejoignent leur armée
+	local spare = spareDivisions(s)
 	for i, general in s.generals do
-		local wanted = if #enemies > 0 then enemies[(i - 1) % #enemies + 1] else neighbor
-		if wanted and general:GetAttribute("FrontPays") ~= wanted then
-			local region = borderRegionOf(s, wanted)
-			if region then
-				BattlePlans.setFront(countryId, general.Name, region)
-			end
+		if ((general:GetAttribute("ChoixBonus") :: number?) or 0) > 0 then
+			Armies.chooseBonus(countryId, general.Name, if i % 2 == 0 then "defense" else "attack")
 		end
-		-- quartier général près de son front
-		local front = BattlePlans.list(general, "Front")
-		local hq = general:GetAttribute("Region") :: string
-		if #front > 0 and not table.find(front, hq) and (general:GetAttribute("Destination") or "") == "" then
-			for _, regionId in front do
-				if not Armies.inRegion(regionId) then
-					Armies.move(countryId, general.Name, regionId)
-					break
-				end
+		local room = Armies.capacityOf(general) - #Armies.divisionsOf(general)
+		if room > 0 and #spare > 0 and general:GetAttribute("Destination") == "" then
+			local list = {}
+			while room > 0 and #spare > 0 do
+				table.insert(list, table.remove(spare) :: Instance)
+				room -= 1
 			end
-		end
-		-- en guerre : une ligne offensive toute prête
-		local enemy = general:GetAttribute("FrontPays")
-		if typeof(enemy) == "string" and DiplomacyService.atWar(countryId, enemy) and #BattlePlans.list(general, "Objectifs") == 0 then
-			chooseObjectives(s, general, enemy)
+			Armies.assign(countryId, general.Name, list)
 		end
 	end
 end
@@ -426,7 +363,7 @@ local function defendActions(s: Situation, actions: { Action })
 		local cost = DivisionConfig.types[typeId].cost
 		local region: string? = nil
 		for _, regionId in camps do
-			if Divisions.occupancy(regionId) < MilitaryConfig.maxDivisionsPerRegion then
+			if Divisions.occupancy(regionId) < Divisions.capacityOf(regionId) then
 				region = regionId
 				break
 			end
@@ -447,7 +384,7 @@ local function defendActions(s: Situation, actions: { Action })
 	-- construire un camp militaire près du front : un pour 5 régions environ, ou quand tous sont pleins
 	local campsFull = true
 	for _, regionId in camps do
-		if Divisions.occupancy(regionId) < MilitaryConfig.maxDivisionsPerRegion then
+		if Divisions.occupancy(regionId) < Divisions.capacityOf(regionId) then
 			campsFull = false
 			break
 		end
@@ -473,9 +410,9 @@ local function defendActions(s: Situation, actions: { Action })
 			})
 		end
 	end
-	-- nommer un général
-	local neededGenerals = math.min(MilitaryConfig.generals.maxPerCountry, math.ceil(#s.all / s.P.divisionsPerGeneral))
-	if #s.all >= 4 and #s.generals < neededGenerals and canPay(s, MilitaryConfig.generals.cost) then
+	-- acheter un général (ses divisions en surplus rejoindront son armée : housekeeping)
+	local neededGenerals = math.min(MilitaryConfig.generals.maxPerCountry, math.floor(#s.all / s.P.divisionsPerGeneral))
+	if #s.generals < neededGenerals and canPay(s, MilitaryConfig.generals.cost) then
 		local region: string? = nil
 		for _, regionId in (if #ordered > 0 then ordered else s.regions) do
 			if not Armies.inRegion(regionId) then
@@ -488,9 +425,9 @@ local function defendActions(s: Situation, actions: { Action })
 			table.insert(actions, {
 				kind = "Defense",
 				score = 0.55,
-				label = `nomme un général en {Regions[regionId].name}`,
+				label = `achète un général en {Regions[regionId].name}`,
 				run = function(): boolean
-					return (Armies.name(countryId, regionId))
+					return (Armies.buy(countryId, regionId))
 				end,
 			})
 		end
@@ -511,25 +448,38 @@ local function defendActions(s: Situation, actions: { Action })
 	end
 end
 
--- Force de son armée sur un front, et celle de l'ennemi en face (régions voisines du front)
-local function frontRatio(s: Situation, general: Instance, enemy: string): number
-	local mine = 0
-	for _, d in Armies.divisionsOf(general) do
-		if not Divisions.isTraining(d) then
-			mine += strengthOf(d)
-		end
-	end
-	local theirs = 0
-	local counted: { [string]: boolean } = {}
-	for _, regionId in BattlePlans.list(general, "Front") do
-		for _, link in Regions[regionId].neighbors do
-			if not link.bySea and not counted[link.region] and RegionService.getOwner(link.region) == enemy then
-				counted[link.region] = true
-				theirs += regionStrength(link.region, enemy)
+-- Défense d'une région ennemie : ses divisions x terrain x fortifications
+local function defenseOf(regionId: string, owner: string): number
+	local terrain = Terrain.types[RegionTerrain.terrain[regionId] or Terrain.default] or Terrain.types[Terrain.default]
+	return regionStrength(regionId, owner) / math.max(0.3, 1 + terrain.attack)
+		* (1 + CombatConfig.defenderBonus + Fortifications.level(regionId) * MilitaryConfig.fortification.defensePerLevel)
+end
+
+-- Régions ennemies (en guerre) à portée d'un général : voisines de ses régions, à moins de
+-- `limit` régions de son quartier général ; renvoie région -> distance
+local function reachable(s: Situation, from: string, limit: number): { [string]: number }
+	local distance: { [string]: number } = { [from] = 0 }
+	local targets: { [string]: number } = {}
+	local queue = { from }
+	local head = 1
+	while head <= #queue do
+		local current = queue[head]
+		head += 1
+		for _, link in Regions[current].neighbors do
+			local nextId = link.region
+			if link.bySea or distance[nextId] or not Regions[nextId] then
+				continue
+			end
+			local owner = RegionService.getOwner(nextId)
+			if owner and DiplomacyService.atWar(s.countryId, owner) then
+				targets[nextId] = math.min(targets[nextId] or math.huge, distance[current] + 1)
+			elseif friendly(s.countryId, owner) and distance[current] + 1 < limit then
+				distance[nextId] = distance[current] + 1
+				table.insert(queue, nextId)
 			end
 		end
 	end
-	return mine / math.max(theirs, 1)
+	return targets
 end
 
 -- Pays en guerre ou affaiblis (une de leurs régions de départ perdue) : cibles des opportunistes
@@ -552,35 +502,94 @@ local function attackActions(s: Situation, actions: { Action })
 	if Stability.get(s.countryId) < s.P.minStabilityToAttack or CouncilState.ceasefireLeft() > 0 then
 		return
 	end
-	-- lancer l'offensive d'un général prêt
-	for _, general in s.generals do
-		local enemy = general:GetAttribute("FrontPays")
-		if typeof(enemy) ~= "string" or not DiplomacyService.atWar(s.countryId, enemy) then
-			continue
+	if #s.enemies > 0 then
+		-- a) la région ennemie voisine la plus faible, attaquée depuis toutes ses régions voisines
+		local best: string? = nil
+		local bestScore, bestRatio = 0, 0
+		local checked: { [string]: boolean } = {}
+		for _, regionId in s.border do
+			for _, link in Regions[regionId].neighbors do
+				local target = link.region
+				local owner = RegionService.getOwner(target)
+				if link.bySea or checked[target] or not owner or not DiplomacyService.atWar(s.countryId, owner) or BattleManager.isFighting(target) then
+					continue
+				end
+				checked[target] = true
+				local mine = 0
+				for _, entry in BattleManager.readyAttackers(s.countryId, target) do
+					if orgRatio(entry.d) >= MilitaryConfig.attackOrgMin then
+						mine += strengthOf(entry.d)
+					end
+				end
+				local ratio = mine / math.max(defenseOf(target, owner), 0.5)
+				if ratio >= s.P.landAttackRatio then
+					local score = 0.5 + 0.3 * math.clamp(ratio / s.P.landAttackRatio - 1, 0, 1)
+					if score > bestScore then
+						best, bestScore, bestRatio = target, score, ratio
+					end
+				end
+			end
 		end
-		if general:GetAttribute("Ordre") == "Offensive" or #BattlePlans.list(general, "Objectifs") == 0 then
-			continue
-		end
-		local planning = (general:GetAttribute("Planification") :: number?) or 0
-		local ratio = frontRatio(s, general, enemy)
-		-- l'armée entière face au front : le général choisira lui-même les secteurs faibles (et ne lance
-		-- pas d'attaque perdue d'avance), d'où une exigence plus basse que pour déclarer une guerre
-		local required = s.P.landAttackRatio * s.P.launchRatioShare
-		if planning >= MilitaryConfig.planning.max * s.P.planningBeforeLaunch and ratio >= required then
-			local generalId, countryId = general.Name, s.countryId
+		if best then
+			local target, countryId = best :: string, s.countryId
+			local continuous = bestRatio >= 2 * s.P.landAttackRatio -- bien plus fort : il enchaîne
 			table.insert(actions, {
 				kind = "Attaque",
-				score = 0.5 + 0.3 * math.clamp(ratio / required - 1, 0, 1),
-				label = `lance l'offensive de {general:GetAttribute("Nom")} contre {theCountry(enemy)}`,
+				score = bestScore,
+				label = `attaque {Regions[target].name}`,
 				run = function(): boolean
-					return (BattlePlans.launch(countryId, generalId))
+					return (BattleManager.attackRegion(countryId, target, continuous))
 				end,
 			})
 		end
+		-- b) un général à l'arrêt lance son armée en offensive continue vers la région ennemie la
+		-- plus faible à sa portée
+		for _, general in s.generals do
+			if general:GetAttribute("Destination") ~= "" or general:GetAttribute("AttaqueContinue") == true or general:GetAttribute("Blesse") ~= nil then
+				continue
+			end
+			local troops = Armies.divisionsOf(general)
+			if #troops < s.P.generalMinTroops then
+				continue
+			end
+			local mine, busy = 0, false
+			for _, d in troops do
+				busy = busy or Divisions.inBattle(d)
+				mine += strengthOf(d)
+			end
+			if busy then
+				continue
+			end
+			local targetId: string? = nil
+			local targetScore = math.huge
+			for regionId, distance in reachable(s, general:GetAttribute("Region") :: string, s.P.generalRange) do
+				if BattleManager.isFighting(regionId) then
+					continue
+				end
+				local defense = defenseOf(regionId, RegionService.getOwner(regionId) :: string) + distance
+				if defense < targetScore then
+					targetId, targetScore = regionId, defense
+				end
+			end
+			local ratio = mine / math.max(targetScore, 0.5)
+			local required = s.P.landAttackRatio * s.P.launchRatioShare
+			if targetId and ratio >= required then
+				local target, generalId, countryId = targetId :: string, general.Name, s.countryId
+				table.insert(actions, {
+					kind = "Attaque",
+					score = 0.55 + 0.3 * math.clamp(ratio / required - 1, 0, 1),
+					label = `lance l'armée de {general:GetAttribute("Nom")} sur {Regions[target].name}`,
+					run = function(): boolean
+						return (Armies.move(countryId, generalId, target, true))
+					end,
+				})
+			end
+		end
+		return
 	end
 	-- déclarer une nouvelle guerre : rythme mondial, une seule guerre à la fois, un général prêt
 	local now = workspace:GetServerTimeNow()
-	if #s.enemies > 0 or #s.generals == 0 or MatchState.elapsed() < AI.firstAttackDelay then
+	if #s.divisions < s.P.minDivisionsForWar or MatchState.elapsed() < AI.firstAttackDelay then
 		return
 	end
 	if now - lastOffensive < AI.offensiveInterval or now - (lastAttackOf[s.countryId] or -math.huge) < s.P.attackCooldown then

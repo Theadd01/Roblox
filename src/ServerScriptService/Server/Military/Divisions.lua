@@ -23,6 +23,8 @@ local RegionService = require(Server:WaitForChild("Map"):WaitForChild("RegionSer
 local Stocks = require(Server:WaitForChild("Economy"):WaitForChild("Stocks"))
 local PopulationService = require(Server:WaitForChild("Economy"):WaitForChild("PopulationService"))
 local BuildingRules = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BuildingRules")) :: any
+local TechState = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("TechState")) :: any
+local Terrain = require(Config:WaitForChild("Terrain")) :: any
 
 local Divisions = {}
 
@@ -106,21 +108,47 @@ function Divisions.listIn(regionId: string): { Instance }
 	return list
 end
 
+-- La division fait-elle partie de l'armée d'un général ? (elle suit le général, hors de la carte ;
+-- voir Armies : le général retire l'attribut quand il disparaît)
+function Divisions.isAbsorbed(d: Instance): boolean
+	local general = d:GetAttribute("Armee")
+	return typeof(general) == "string" and general ~= ""
+end
+
 -- Place occupée dans une région : divisions qui y restent (pas celles qui en partent) et divisions
--- en route vers elle
+-- en route vers elle. Les troupes des généraux n'en prennent pas (cahier des charges v2, 5.4).
 function Divisions.occupancy(regionId: string): number
 	local count = 0
 	for d in byRegion[regionId] or {} do
-		if d.Parent and d:GetAttribute("Destination") == "" then
+		if d.Parent and d:GetAttribute("Destination") == "" and not Divisions.isAbsorbed(d) then
 			count += 1
 		end
 	end
 	for d in arriving[regionId] or {} do
-		if d.Parent then
+		if d.Parent and not Divisions.isAbsorbed(d) then
 			count += 1
 		end
 	end
 	return count
+end
+
+-- Limite de stationnement d'une région : celle de son propriétaire (Config/Military, relevée par
+-- la recherche « Logistique de garnison » : TechState.stationingCap)
+function Divisions.capacityOf(regionId: string): number
+	return TechState.stationingCap(RegionService.getOwner(regionId) or "")
+end
+
+-- Durée d'une étape par la terre (fonction pure, testée dans Tests/Supply.spec) : distance /
+-- vitesse du type, ralentie par le terrain d'arrivée et, pour les véhicules, par le manque de
+-- pétrole ; bornée par Config/Military.travel
+function Divisions.stepSeconds(typeId: string, distance: number, terrainId: string?, fuel: boolean): number
+	local t = DivisionConfig.types[typeId] or DivisionConfig.types.Infanterie
+	local terrain = Terrain.types[terrainId or Terrain.default] or Terrain.types[Terrain.default]
+	local speed = t.speed * terrain.speed
+	if t.fuel and not fuel then
+		speed *= Military.combat.noFuel -- sans pétrole, les véhicules se traînent
+	end
+	return math.clamp(distance / math.max(speed, 0.5), Military.travel.min, Military.travel.max)
 end
 
 function Divisions.ofCountry(countryId: string): { Instance }
@@ -245,12 +273,12 @@ end
 function Divisions.liberate(regionId: string, newOwner: string, militia: number, friendly: (countryId: string, regionId: string) -> boolean)
 	for _, d in Divisions.inRegion(regionId) do
 		local owner = d:GetAttribute("Proprietaire") :: string
-		if friendly(owner, regionId) then
-			continue
+		if friendly(owner, regionId) or Divisions.isAbsorbed(d) then
+			continue -- les armées des généraux reculent avec leur général (Armies)
 		end
 		local target: string? = nil
 		for _, link in Regions[regionId].neighbors do
-			if not link.bySea and friendly(owner, link.region) and Divisions.occupancy(link.region) < Military.maxDivisionsPerRegion then
+			if not link.bySea and friendly(owner, link.region) and Divisions.occupancy(link.region) < Divisions.capacityOf(link.region) then
 				target = link.region
 				break
 			end
@@ -264,7 +292,7 @@ function Divisions.liberate(regionId: string, newOwner: string, militia: number,
 		end
 	end
 	for _ = 1, militia do
-		if Divisions.occupancy(regionId) < Military.maxDivisionsPerRegion then
+		if Divisions.occupancy(regionId) < Divisions.capacityOf(regionId) then
 			Divisions.create(newOwner, "Milice", regionId, 0)
 		end
 	end
@@ -287,8 +315,9 @@ function Divisions.recruit(countryId: string, typeId: unknown, regionId: unknown
 	if camp <= 0 then
 		return false, "Il faut un camp militaire dans cette région pour y former des divisions (onglet Bâtiments)."
 	end
-	if Divisions.occupancy(regionId) >= Military.maxDivisionsPerRegion then
-		return false, `Cette région a déjà {Military.maxDivisionsPerRegion} divisions (maximum).`
+	local capacity = Divisions.capacityOf(regionId)
+	if Divisions.occupancy(regionId) >= capacity then
+		return false, `Cette région a déjà {capacity} divisions (maximum).`
 	end
 	if #Divisions.ofCountry(countryId) >= Divisions.maxFor(countryId) then
 		return false, `Ton pays ne peut pas avoir plus de {Divisions.maxFor(countryId)} divisions (il faut plus d'habitants).`
@@ -302,7 +331,8 @@ function Divisions.recruit(countryId: string, typeId: unknown, regionId: unknown
 		return false, "Pas assez de ressources pour cette division."
 	end
 	PopulationService.spend(regionId, men)
-	Divisions.create(countryId, typeId :: string, regionId, t.trainSeconds * BuildingRules.campFactor(camp))
+	-- recherche « Mobilisation » : entraînement plus court
+	Divisions.create(countryId, typeId :: string, regionId, t.trainSeconds * BuildingRules.campFactor(camp) * TechState.recruitTimeFactor(countryId))
 	return true, nil
 end
 
@@ -377,7 +407,7 @@ function Divisions.spawnStarting()
 		local order = placementOrder(countryId, owned)
 		for i, typeId in types do
 			local regionId = order[(i - 1) % #order + 1]
-			if Divisions.occupancy(regionId) < Military.maxDivisionsPerRegion then
+			if Divisions.occupancy(regionId) < Divisions.capacityOf(regionId) then
 				local d = Divisions.create(countryId, typeId, regionId, 0)
 				d:SetAttribute("Retranchement", 1) -- en début de partie, elles tiennent déjà leurs positions
 			end

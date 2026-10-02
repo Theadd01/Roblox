@@ -249,10 +249,11 @@ local function update(dt: number, _now: number)
 	end
 
 	local S = Military.supply
-	-- divisions à l'arrêt par région (elles se partagent la capacité de la région)
+	-- divisions à l'arrêt par région (elles se partagent la capacité de la région) ; l'armée d'un
+	-- général a sa propre logistique : elle n'y compte pas (mais elle doit rester reliée au réseau)
 	local present: { [string]: number } = {}
 	for _, d in Divisions.all() do
-		if not Divisions.isMoving(d) then
+		if not Divisions.isMoving(d) and not Divisions.isAbsorbed(d) then
 			local regionId = d:GetAttribute("Region") :: string
 			present[regionId] = (present[regionId] or 0) + 1
 		end
@@ -305,7 +306,8 @@ local function update(dt: number, _now: number)
 			end
 		elseif force < 100 and not Divisions.inBattle(d) and not broke[countryId] then
 			-- renforts : la force remonte, aux frais du pays (une part du coût de la division par point)
-			local gained = math.min(100 - force, Military.reinforcePerMinute / 60 * dt)
+			-- bonus « Récupération » de son général : plus vite
+			local gained = math.min(100 - force, Military.reinforcePerMinute / 60 * dt * (1 + Armies.bonus(d, "recovery")))
 			d:SetAttribute("Force", force + gained)
 			for resourceId, amount in Divisions.typeOf(d).cost do
 				owe(countryId, resourceId, amount * Military.reinforceCostFactor * gained)

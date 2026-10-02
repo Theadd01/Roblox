@@ -7,6 +7,7 @@
 -- Fréquence limitée : Config/Military.commands.perSecond ordres par seconde et par joueur.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TextService = game:GetService("TextService")
 
 local Config = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config")
 local Military = require(Config:WaitForChild("Military")) :: any
@@ -58,6 +59,22 @@ function Commands.ownedDivisions(countryId: string, ids: unknown): ({ Instance }
 		return nil, "Aucune division choisie."
 	end
 	return list, nil
+end
+
+-- Texte choisi par un joueur et montré aux autres (nom d'un général) : filtré par Roblox ; nil
+-- s'il est refusé ou modifié par le filtre
+function Commands.filterText(text: unknown, player: Player): string?
+	if typeof(text) ~= "string" or #text == 0 or #text > 100 then
+		return nil
+	end
+	local ok, result = pcall(function(): string
+		local filtered = TextService:FilterStringAsync(text, player.UserId)
+		return filtered:GetNonChatStringForBroadcastAsync()
+	end)
+	if not ok or result ~= text then
+		return nil
+	end
+	return result
 end
 
 function Commands.init()

@@ -4,14 +4,12 @@
 -- les traits des généraux dans Config/Generals. Rien de tout ça n'est écrit en dur dans le code.
 
 local Military = {
-	-- Boucle centrale (serveur)
-	tickSeconds = 2, -- durée d'un tick de combat
+	-- Boucle centrale (serveur). Le combat terrestre a son propre tick : Config/CombatConfig.tickSeconds
+	tickSeconds = 2, -- référence des valeurs « par tick » ci-dessous (expérience...), en secondes
 	aiInterval = 3, -- secondes entre deux réflexions d'un général (IA d'exécution)
 
 	-- Occupation des régions
-	maxDivisionsPerRegion = 10, -- limite d'empilement (= 10 modèles 3D au plus par région)
-	maxDivisionsPerArmy = 24, -- divisions qu'un général peut commander
-	maxGeneralsPerRegion = 1,
+	maxDivisionsPerRegion = 10, -- limite de stationnement de base (la recherche la relève : TechState.stationingCap)
 
 	-- Divisions de départ de chaque pays (placées sur ses régions au début de la partie)
 	starting = {
@@ -98,19 +96,40 @@ local Military = {
 		buildSeconds = 60,
 	},
 
-	-- Généraux (SYSTEME_MILITAIRE.md, 4.1) : 1 par région au plus (maxGeneralsPerRegion), une
-	-- armée de 24 divisions au plus (maxDivisionsPerArmy) ; traits dans Config/Generals
+	-- Généraux (cahier des charges v2, section 5) : on achète un général dans une de ses régions,
+	-- puis on lui rattache des troupes (par type et par nombre, depuis leurs régions) : elles
+	-- disparaissent de la carte, le général devient UNE armée (une icône avec un compteur).
+	-- Il ignore la limite de stationnement, se déplace à la vitesse de sa troupe la plus lente,
+	-- attaque avec toute son armée (en respectant la largeur de front) et donne ses bonus à
+	-- toutes ses troupes. Traits dans Config/Generals.
 	generals = {
-		cost = { Credits = 200 }, -- nommer un général
+		cost = { Credits = 200 }, -- acheter un général
 		maxPerCountry = 5,
-		moveSpeed = 8, -- studs par seconde quand son quartier général change de région...
-		moveMin = 5, -- ... trajet de 5 à 30 secondes
-		moveMax = 30,
-		xpPerTick = 0.1, -- expérience par tick de bataille de son armée
-		xpVictory = 3, -- en plus après une victoire de son armée
+		capacity = { 20, 30, 40, 50, 60 }, -- troupes au plus selon le niveau (1 à 5)
 		xpPerLevel = 25, -- niveau = 1 + expérience / 25 (5 au plus)
 		maxLevel = 5,
+		xpPerTick = 0.1, -- expérience par tick de 2 s de bataille de son armée
+		xpVictory = 8, -- en plus après une victoire de son armée
+		xpRegion = 12, -- en plus quand son armée prend une région
+		upgradeCost = { 300, 600, 1000, 1500 }, -- crédits pour passer au niveau 2, 3, 4 et 5
+		-- bonus de toutes ses troupes, par niveau au-dessus du premier
+		levelBonus = { attack = 0.05, defense = 0.05 },
+		-- à chaque niveau gagné, le joueur choisit un bonus (cumulable)
+		choiceOrder = { "attack", "defense", "speed", "morale", "recovery" },
+		choices = {
+			attack = { name = "Attaque", icon = "⚔️", value = 0.1, text = "+10 % de dégâts pour ses troupes" },
+			defense = { name = "Défense", icon = "🛡️", value = 0.1, text = "+10 % de défense pour ses troupes" },
+			speed = { name = "Vitesse", icon = "🏃", value = 0.15, text = "-15 % de temps de trajet" },
+			morale = { name = "Moral", icon = "🎖️", value = 0.15, text = "-15 % de moral perdu au combat" },
+			recovery = { name = "Récupération", icon = "❤️", value = 0.5, text = "+50 % de PV regagnés au repos" },
+		},
+		maxBonus = 1, -- un effet ne dépasse jamais +100 % (traits, niveau et choix ensemble)
+		advanceFactor = 0.5, -- après une victoire, l'armée entre dans la région prise 2 fois plus vite
+		continueDelay = 1, -- attaque continue : secondes après l'arrivée avant la prochaine attaque
+		continueMinOrganisation = 0.35, -- ... si le moral moyen de ses troupes dépasse 35 % du max
+		woundedSeconds = 60, -- général vaincu (« blessé », selon la difficulté) : hors combat 60 s
 		disorganizedSeconds = 60, -- quartier général pris : il se replie et perd ses bonus un moment
+		nameMaxLength = 24,
 		roughTerrain = { Montagne = true, Collines = true, Foret = true, Marais = true }, -- trait Montagnard
 	},
 
@@ -120,7 +139,7 @@ local Military = {
 		range = 150, -- studs : une escadrille couvre les batailles à cette distance de sa base
 		superiorityBonus = 0.2, -- domination totale du ciel : +20 % d'attaque et de défense
 		superiorityAt = 0.6, -- part des chasseurs à partir de laquelle un camp domine le ciel
-		supportDamage = 0.25, -- appui au sol : organisation retirée par tick, par point d'attaque
+		supportDamage = 0.125, -- appui au sol : moral (organisation) retiré par seconde, par point d'attaque
 		bombingSeconds = 45, -- raid de bombardiers réussi : usines arrêtées et ravitaillement réduit
 		bombedSupply = 0.5, -- capacité de ravitaillement d'une région bombardée (x0,5)
 	},

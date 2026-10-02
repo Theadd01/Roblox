@@ -60,4 +60,11 @@ function MatchState.number(): number
 	return number("PartieNumero") or 1
 end
 
+-- Difficulté de la partie (Config/Match.difficulties) : son nom et ses réglages
+function MatchState.difficulty(): (string, any)
+	local chosen = workspace:GetAttribute("Difficulte")
+	local name = if typeof(chosen) == "string" and Match.difficulties[chosen] then chosen else Match.difficulty
+	return name, Match.difficulties[name]
+end
+
 return MatchState

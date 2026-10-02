@@ -8,6 +8,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Technologies = require(script.Parent:WaitForChild("Config"):WaitForChild("Technologies")) :: any
+local Military = require(script.Parent:WaitForChild("Config"):WaitForChild("Military")) :: any
 
 local TechState = {}
 
@@ -107,6 +108,25 @@ end
 -- Multiplicateur de réussite des sabotages et vols contre ce pays (cyberdéfense)
 function TechState.sabotageFactor(countryId: string): number
 	return math.max(0, 1 + sum(countryId, "sabotageDefense"))
+end
+
+-- Divisions qu'une région de ce pays peut accueillir (limite de stationnement)
+function TechState.stationingCap(_countryId: string): number
+	return Military.maxDivisionsPerRegion
+end
+
+-- PV et dégâts en plus d'un type de division (niveau de recherche de sa branche)
+function TechState.divisionHealthBonus(_countryId: string, _typeId: string): number
+	return 0
+end
+
+function TechState.divisionDamageBonus(_countryId: string, _typeId: string): number
+	return 0
+end
+
+-- Multiplicateur du temps d'entraînement des divisions
+function TechState.recruitTimeFactor(_countryId: string): number
+	return 1
 end
 
 return TechState

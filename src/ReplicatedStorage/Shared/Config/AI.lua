@@ -9,7 +9,7 @@ local AI = {
 	turnInterval = 20, -- secondes entre deux tours d'un même pays (les pays jouent l'un après l'autre)
 	startDelay = 20, -- secondes avant les premiers tours (le temps de choisir son pays)
 	actionsPerTurn = 3, -- actions au plus par tour...
-	maxPerKind = { Commerce = 2, Industrie = 1, Defense = 2, Attaque = 1, Diplomatie = 1, Contrat = 1 } :: { [string]: number }, -- ... et par famille
+	maxPerKind = { Commerce = 2, Industrie = 1, Defense = 2, Attaque = 2, Diplomatie = 1, Contrat = 1 } :: { [string]: number }, -- ... et par famille
 	minScore = 0.3, -- une action notée en dessous n'est pas faite
 
 	-- Stock gardé : quelques cycles de consommation (usines, entretien des armées), acheté
@@ -57,19 +57,22 @@ local AI = {
 	minStabilityToAttack = 35, -- en dessous, l'IA ne lance plus de conquête (effort de guerre réduit)
 	lowStabilityPeace = 40, -- en dessous, elle cherche davantage la paix
 
-	-- Armée de terre (divisions, SYSTEME_MILITAIRE.md 8) : l'IA utilise les mêmes outils que le joueur
-	-- (recrutement, généraux, fronts, offensives, fortifications), sans tricher sur les règles
-	landAttackRatio = 1.5, -- offensive quand son armée est 1,5 fois plus forte que l'ennemi en face
+	-- Armée de terre (divisions, SYSTEME_MILITAIRE.md 8, cahier des charges v2) : l'IA utilise les
+	-- mêmes outils que le joueur (recrutement, généraux, attaques, fortifications), sans tricher
+	landAttackRatio = 1.5, -- attaque une région quand ses divisions voisines sont 1,5 fois plus fortes que la défense
 	extraDivisions = 0, -- divisions voulues en plus d'une par région frontalière
-	divisionsPerGeneral = 8, -- un général pour 8 divisions environ
-	planningBeforeLaunch = 0.5, -- lance l'offensive quand le bonus de planification atteint 50 % du max
-	launchRatioShare = 0.75, -- pour lancer l'offensive d'un général : landAttackRatio x 0,75 (il choisit ses cibles)
+	divisionsPerGeneral = 10, -- un général pour 10 divisions environ
+	garrisonPerBorder = 1, -- divisions gardées sur chaque région frontalière (le surplus rejoint les généraux)
+	generalMinTroops = 4, -- un général n'attaque qu'avec 4 troupes au moins...
+	generalRange = 6, -- ... une région ennemie à 6 régions au plus de son quartier général
+	launchRatioShare = 0.75, -- un général attaque à landAttackRatio x 0,75 (son armée enchaîne ensuite)
+	minDivisionsForWar = 4, -- pas de nouvelle guerre avec moins de 4 divisions prêtes
 	fortifyDanger = 1.3, -- fortifie une région frontalière quand l'ennemi en face est 1,3 fois plus fort
-	offensiveDepth = 3, -- régions visées à la fois par une offensive
 
-	-- Diplomatie (voir DiplomacyAI) : envie de s'allier et de faire la paix (0 à 1)
+	-- Diplomatie (voir DiplomacyAI) : envie de s'allier (0 à 1). L'IA ne propose jamais la paix, une
+	-- trêve ni un événement : elle vote sur ce que proposent les joueurs (VoteService, Config/Votes)
 	allianceWillingness = 0.45,
-	peaceWillingness = 0.45,
+	peaceWillingness = 0.45, -- pour son vote sur une paix ou une trêve proposée par un joueur
 	proposalInterval = 120, -- secondes entre deux propositions d'alliance d'un même pays IA
 	proposalRepeat = 300, -- secondes avant de refaire une proposition au même pays
 	longWar = 240, -- une guerre plus longue que ça pèse (l'IA pense davantage à la paix)
