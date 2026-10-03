@@ -26,7 +26,7 @@ local CountryAssignment = require(Server:WaitForChild("Session"):WaitForChild("C
 local RateLimiter = require(Server:WaitForChild("Util"):WaitForChild("RateLimiter"))
 local Stocks = require(Server:WaitForChild("Economy"):WaitForChild("Stocks"))
 local Stability = require(script.Parent:WaitForChild("Stability"))
-local DiplomacyService = require(script.Parent:WaitForChild("DiplomacyService"))
+local CouncilService = require(script.Parent:WaitForChild("CouncilService"))
 
 local CURRENCY: string = Resources.currency.id
 local CHECK_INTERVAL = 5
@@ -161,7 +161,7 @@ local function summary(countryId: string, effects: { [string]: any }): string
 		table.insert(parts, `{signed(effects.morale)} moral des armées`)
 	end
 	if effects.peace then
-		table.insert(parts, "propose la paix à tes ennemis")
+		table.insert(parts, "propose la paix à ton ennemi (vote)")
 	end
 	return table.concat(parts, ", ")
 end
@@ -197,8 +197,10 @@ local function applyEffects(countryId: string, title: string, effects: { [string
 		end
 	end
 	if effects.peace then
-		for _, enemy in DiplomacyState.enemiesOf(countryId) do
-			DiplomacyService.propose(countryId, enemy, "Paix")
+		-- la paix se vote (cahier des charges v2, section 1) : un vote au Conseil avec le premier ennemi
+		local enemy = DiplomacyState.enemiesOf(countryId)[1]
+		if enemy then
+			CouncilService.propose(countryId, { type = "Paix", cible = enemy, offre = 0 })
 		end
 	end
 end

@@ -1,9 +1,11 @@
 --!strict
 -- IA des pays : diplomatie (voir DiplomacyService).
---   - répond aux propositions faites à un pays qu'elle dirige (alliance, paix), selon sa
---     personnalité (allianceWillingness, peaceWillingness), sa situation et sa mémoire ;
---   - propose des alliances (ennemi commun, menace à la frontière) et la paix (guerre qui
---     tourne mal ou qui dure) : actions de la famille « Diplomatie » pour CountryBrain ;
+--   - répond aux propositions d'alliance faites à un pays qu'elle dirige, selon sa personnalité
+--     (allianceWillingness), sa situation et sa mémoire ;
+--   - propose des alliances (ennemi commun, menace à la frontière) : actions de la famille
+--     « Diplomatie » pour CountryBrain ;
+--   - ne propose JAMAIS de trêve, de paix ni d'événement mondial (cahier des charges v2,
+--     section 1) : seuls les joueurs les proposent ; l'IA vote (CouncilAI) ;
 --   - se souvient des trahisons : un pays qui a quitté son bloc en pleine guerre n'est plus
 --     digne de confiance.
 
@@ -20,7 +22,6 @@ local DiplomacyService = require(Server:WaitForChild("Politics"):WaitForChild("D
 local DiplomacyState = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("DiplomacyState")) :: any
 local PersonalityService = require(script.Parent:WaitForChild("PersonalityService"))
 local MilitaryAI = require(script.Parent:WaitForChild("MilitaryAI"))
-local Stability = require(Server:WaitForChild("Politics"):WaitForChild("Stability"))
 local BalanceService = require(Server:WaitForChild("Politics"):WaitForChild("BalanceService"))
 local Politics = require(Config:WaitForChild("Politics")) :: any
 
@@ -43,20 +44,6 @@ end
 
 local function nameOf(countryId: string): string
 	return if Countries[countryId] then Countries[countryId].name else countryId
-end
-
--- Régions de départ de `countryId` qu'il a perdues, et régions prises à ses ennemis
-local function warBalance(countryId: string, enemies: { [string]: boolean }): (number, number)
-	local lost, won = 0, 0
-	for regionId, region in Regions do
-		local owner = RegionService.getOwner(regionId)
-		if region.startOwner == countryId and owner ~= countryId then
-			lost += 1
-		elseif owner == countryId and enemies[region.startOwner] then
-			won += 1
-		end
-	end
-	return lost, won
 end
 
 -- Guerres qu'une alliance avec `other` ferait entrer : ennemis de son camp qu'on ne combat pas
@@ -126,72 +113,25 @@ local function allianceScore(countryId: string, other: string, P: any): number
 	return score
 end
 
--- Envie de faire la paix avec `enemy` (acceptée au-dessus de 0,5)
-local function peaceScore(countryId: string, enemy: string, P: any): number
-	local score = P.peaceWillingness
-	local enemies = set(DiplomacyService.enemiesOf(countryId))
-	local lost, won = warBalance(countryId, enemies)
-	if lost > 0 then
-		score += 0.25 -- la guerre tourne mal
-	end
-	if won > 0 then
-		score -= 0.3 -- elle tourne bien : on continue
-	end
-	local since = DiplomacyService.warSince(countryId, enemy)
-	if since and workspace:GetServerTimeNow() - since > P.longWar then
-		score += 0.15
-	end
-	-- une guerre toute jeune : on laisse aux généraux le temps de préparer et lancer leurs offensives
-	if since and workspace:GetServerTimeNow() - since < P.minWarDuration then
-		score -= 0.35
-	end
-	if MilitaryAI.worstDanger(countryId, P) > 1 then
-		score += 0.2
-	end
-	if Stability.get(countryId) < P.lowStabilityPeace then
-		score += 0.3 -- la population ne veut plus de cette guerre
-	end
-	return score
-end
-
 -- Réponse de l'IA à une proposition faite à un pays qu'elle dirige
 local function answer(proposal: Instance)
 	local to = proposal:GetAttribute("A") :: string
 	local from = proposal:GetAttribute("De") :: string
-	if not CountryAssignment.isAIControlled(to) then
-		return -- un joueur répondra lui-même
+	if not CountryAssignment.isAIControlled(to) or proposal:GetAttribute("Type") ~= "Alliance" then
+		return -- un joueur répondra lui-même ; la paix se vote au Conseil (CouncilAI)
 	end
 	task.wait(rng:NextNumber(Diplomacy.answerDelay.min, Diplomacy.answerDelay.max))
 	if not proposal.Parent or proposal:GetAttribute("Reponse") ~= nil or not CountryAssignment.isAIControlled(to) then
 		return
 	end
 	local P = PersonalityService.settings(to)
-	local score = if proposal:GetAttribute("Type") == "Alliance" then allianceScore(to, from, P) else peaceScore(to, from, P)
-	DiplomacyService.respond(to, proposal.Name, score >= 0.5)
+	DiplomacyService.respond(to, proposal.Name, allianceScore(to, from, P) >= 0.5)
 end
 
 -- Actions diplomatiques possibles pour un pays IA (famille « Diplomatie »)
 function DiplomacyAI.actions(countryId: string, P: any): { Action }
 	local actions: { Action } = {}
 	local now = time()
-
-	-- la paix avec un ennemi, si la guerre tourne mal ou dure trop
-	for _, enemy in DiplomacyService.enemiesOf(countryId) do
-		local score = peaceScore(countryId, enemy, P)
-		local key = `{countryId}|{enemy}`
-		if score >= 0.6 and now - (lastProposalTo[key] or -math.huge) >= P.proposalRepeat then
-			table.insert(actions, {
-				kind = "Diplomatie",
-				score = 0.4 + (score - 0.5),
-				label = `propose la paix à {nameOf(enemy)}`,
-				run = function(): boolean
-					lastProposalTo[key] = time()
-					return (DiplomacyService.propose(countryId, enemy, "Paix"))
-				end,
-			})
-			break
-		end
-	end
 
 	-- une alliance : avec un pays qui a le même ennemi, ou un voisin quand il est menacé
 	if now - (lastProposalOf[countryId] or -math.huge) < P.proposalInterval then

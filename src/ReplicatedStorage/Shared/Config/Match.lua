@@ -38,15 +38,15 @@ Match.phases = {
 		start = 15 * 60,
 		icon = "⚔️",
 		name = "Premiers conflits",
-		text = "Le Conseil mondial se réunit. Alliances, premières guerres, premiers dilemmes.",
+		text = "Alliances, premières guerres, premiers dilemmes. Propose trêves, paix et résolutions au Conseil mondial.",
 	},
 	{
 		id = "Crise",
 		start = 35 * 60,
 		icon = "🌋",
 		name = "Crise mondiale",
-		text = "Un choc frappe le marché mondial et les guerres s'ouvrent partout.",
-		crisis = true,
+		text = "Les guerres s'ouvrent partout. Les crises mondiales se votent au Conseil.",
+		crisis = true, -- seulement si Match.automaticCrisis (cahier v2 : seuls les joueurs lancent un événement)
 	},
 	{
 		id = "Final",
@@ -84,6 +84,7 @@ Match.rankingSize = 10 -- pays affichés dans le classement (plus le rang de cha
 --   researchSpeed : vitesse de recherche des pays IA (les joueurs : 1) ;
 --   generalDefeat : un général dont toute l'armée est détruite est « Blesse » (hors combat un
 --     moment, Config/Military.generals.woundedSeconds) ou « Mort » (il disparaît).
+Match.automaticCrisis = false -- crise automatique sur le marché au début de la phase « Crise » : coupée
 Match.difficulty = "Normal"
 Match.difficulties = {
 	Facile = { researchSpeed = 0.5, generalDefeat = "Blesse" },

@@ -1,8 +1,9 @@
 --!strict
--- Onglet Diplomatie : ton pays (stabilité, opinion publique, leader de la partie),
+-- Onglet Diplomatie : ton pays (stabilité, opinion publique, leader de la partie, Conseil mondial),
 -- ton bloc (et le quitter), propositions reçues (accepter, refuser),
--- tes guerres (proposer la paix), tes trêves, tes voisins (proposer une alliance, déclarer
--- la guerre) et les blocs du monde. Le serveur valide chaque demande (DiplomacyService).
+-- tes guerres (proposer une trêve ou la paix : un vote au Conseil, CouncilPanel), tes trêves, tes
+-- voisins (proposer une alliance, déclarer la guerre) et les blocs du monde. Le serveur valide
+-- chaque demande (DiplomacyService, CouncilService).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -20,6 +21,7 @@ local UI = script.Parent.Parent
 local UIStyle = require(UI:WaitForChild("UIStyle"))
 local Sfx = require(script.Parent.Parent.Parent:WaitForChild("Audio"):WaitForChild("Sfx"))
 local RegionView = require(UI.Parent:WaitForChild("Map"):WaitForChild("RegionView"))
+local CouncilPanel = require(UI:WaitForChild("CouncilPanel"))
 
 local GREEN, RED, ORANGE = "#78DC82", "#EB5F55", "#FF9A78"
 local CONFIRM_TIME = 4 -- secondes pour confirmer une déclaration de guerre
@@ -211,11 +213,10 @@ function DiplomacyTab.build(container: Instance, countryId: string): () -> ()
 			end
 			-- Conseil mondial : prochain vote et effets en cours
 			local conseil = state:FindFirstChild("Conseil")
-			local nextSession = conseil and conseil:GetAttribute("Prochaine")
 			if conseil and conseil:GetAttribute("Etat") == "Vote" then
 				table.insert(lines, `🏛️ <b>Vote en cours au Conseil mondial</b> : {conseil:GetAttribute("Titre")}`)
-			elseif typeof(nextSession) == "number" then
-				table.insert(lines, `🏛️ Prochain Conseil mondial dans {duration(nextSession - workspace:GetServerTimeNow())}`)
+			else
+				table.insert(lines, `🏛️ Conseil mondial libre : propose une trêve, la paix, une résolution ou un événement.`)
 			end
 			local sanctioned, sanctionLeft = CouncilState.sanction()
 			if sanctioned then
@@ -232,8 +233,14 @@ function DiplomacyTab.build(container: Instance, countryId: string): () -> ()
 			end
 			return table.concat(lines, "\n")
 		end, {})
+		local proposeVote = UIStyle.button("ProposerVote", "🏛️ Proposer un vote au Conseil", true)
+		proposeVote.Size = UDim2.new(1, 0, 0, 40)
+		proposeVote.TextSize = 15
+		proposeVote.Activated:Connect(function()
+			CouncilPanel.openProposal()
+		end)
+		add(proposeVote)
 
-		local now = workspace:GetServerTimeNow()
 		-- ton bloc
 		title("🤝 Ton bloc")
 		local blocName = DiplomacyState.blocName(countryId)
@@ -291,15 +298,18 @@ function DiplomacyTab.build(container: Instance, countryId: string): () -> ()
 		-- guerres
 		if #enemies > 0 then
 			title("⚔️ Tes guerres")
+			text("Une trêve ou la paix se vote au Conseil mondial : les deux camps votent, à la majorité simple.", 14, UIStyle.FONT, UIStyle.TEXT_DIM)
 			for _, enemy in enemies do
 				local since = DiplomacyState.warSince(countryId, enemy)
-				local pending = pendingFrom(enemy, "Paix")
 				row("Guerre_" .. enemy, function(): string
 					local elapsed = if since then workspace:GetServerTimeNow() - since else 0
 					return `{colorDot(enemy)} <b>{nameOf(enemy)}</b>  <font color="{UIStyle.GREY_HEX}">{personalityOf(enemy)}</font>\ndepuis {duration(elapsed)}`
 				end, {
-					{ name = "Paix_" .. enemy, text = if pending then "En attente…" else "Proposer la paix", enabled = not pending, onClick = function()
-						ask("ProposerPaix", enemy)
+					{ name = "Paix_" .. enemy, text = "🤝 Paix", primary = true, onClick = function()
+						CouncilPanel.openProposal("Paix", enemy)
+					end },
+					{ name = "Treve_" .. enemy, text = "🕊️ Trêve", onClick = function()
+						CouncilPanel.openProposal("Treve", enemy)
 					end },
 				})
 			end

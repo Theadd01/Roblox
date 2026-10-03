@@ -64,7 +64,7 @@ function PlayStyle.recordAction(countryId: string, action: string, a: unknown, b
 		add(countryId, S.recruit)
 	elseif action == "ProposerAlliance" then
 		add(countryId, S.defend)
-	elseif action == "ProposerPaix" then
+	elseif action == "ProposerVote" and (a == "Paix" or a == "Treve") then
 		add(countryId, S.trade) -- chercher la paix : plutôt commerçant
 	elseif action == "DeclarerGuerre" or action == "SaboterProjet" then
 		add(countryId, S.attack)

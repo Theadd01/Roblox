@@ -76,11 +76,11 @@ end
 local function costText(costs: { [string]: number }): string
 	local parts = {}
 	if costs[Resources.currency.id] then
-		table.insert(parts, string.format("%s %s", costs[Resources.currency.id], Resources.currency.icon))
+		table.insert(parts, `{costs[Resources.currency.id]} {Resources.currency.icon}`)
 	end
 	for _, id in Resources.order do
 		if costs[id] then
-			table.insert(parts, string.format("%s %s", costs[id], Resources.list[id].icon))
+			table.insert(parts, `{costs[id]} {Resources.list[id].icon}`)
 		end
 	end
 	return if #parts > 0 then table.concat(parts, " + ") else "gratuit"

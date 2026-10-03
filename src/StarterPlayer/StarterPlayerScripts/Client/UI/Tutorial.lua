@@ -125,7 +125,7 @@ local function steps(countryId: string, folder: Instance): { Step }
 			end,
 		},
 		{
-			text = "🎉 <b>Bravo !</b> Tu sais produire, vendre, recruter et déplacer une armée. Suis tes objectifs nationaux en haut à gauche, et garde un œil sur la Diplomatie : le Conseil mondial vote toutes les 15 minutes. Bonne partie !",
+			text = "🎉 <b>Bravo !</b> Tu sais produire, vendre, recruter et déplacer une armée. Suis tes objectifs nationaux en haut à gauche, et garde un œil sur la Diplomatie : tu peux proposer une trêve, la paix ou une résolution au Conseil mondial (les autres pays votent). Bonne partie !",
 		},
 	}
 end

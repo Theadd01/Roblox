@@ -1,19 +1,22 @@
 --!strict
--- Diplomatie : blocs d'alliance, guerres, trêves et propositions (alliance, paix).
+-- Diplomatie : blocs d'alliance, guerres, trêves et propositions d'alliance. La paix et les trêves
+-- se votent : seul un joueur les propose, au Conseil mondial (CouncilService, cahier des charges v2
+-- section 1) ; ce module applique le résultat (makePeace, makeTruce).
 -- Le serveur décide de tout. État publié dans ReplicatedStorage.EtatMonde.Diplomatie :
 --   Blocs.<id>         Nom, Membres (« FRA,DEU ») ; et l'attribut « Bloc » de EtatMonde.Pays.<code>
 --   Guerres.<A_B>      A, B, Depuis (heure serveur), Declarant (A et B dans l'ordre alphabétique)
---   Treves.<A_B>       A, B, Fin (heure serveur)
+--   Treves.<A_B>       A, B, Fin (heure serveur), Reprise (vrai : la guerre reprend à la fin)
 --   Embargos.<A>B>     De, Contre : A refuse tout contrat avec B (voir ContractService)
---   Propositions.<id>  De, A, Type (« Alliance » | « Paix »), Expire,
+--   Propositions.<id>  De, A, Type (« Alliance »), Expire,
 --                      Reponse (« Acceptee » | « Refusee » | « Expiree ») une fois tranchée
 -- Règles (Config/Diplomacy) :
 --   - un bloc réunit au plus maxBlocSize pays ; ses membres partagent leurs guerres ;
 --   - attaquer un pays en paix lui déclare la guerre (voir ArmyService) : les deux blocs entrent en guerre ;
 --   - on n'attaque ni un allié, ni un pays avec qui on a une trêve ;
---   - la paix, proposée puis acceptée, arrête la guerre entre les deux camps et ouvre une trêve ;
+--   - la paix, votée, arrête la guerre entre les deux camps et ouvre une trêve ; une trêve votée
+--     suspend la guerre un moment, puis elle reprend ;
 --   - quitter son bloc pendant une guerre est une trahison (les IA s'en souviennent).
--- Remotes : ProposerAlliance(pays), ProposerPaix(pays), DeclarerGuerre(pays),
+-- Remotes : ProposerAlliance(pays), DeclarerGuerre(pays) (aussi depuis la fiche d'une région),
 --           RepondreProposition(id, accepte), QuitterBloc(), Embargo(pays, actif).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -112,24 +115,34 @@ local function setWar(a: string, b: string, declarer: string)
 	war.Parent = f.Guerres
 end
 
-local function endWar(a: string, b: string)
+-- Fin d'une guerre, suivie d'une trêve de `duration` secondes ; resume : à la fin de la trêve, la
+-- guerre reprend (trêve votée), sinon c'est la paix
+local function endWar(a: string, b: string, duration: number?, resume: boolean?)
 	local f = folders
 	if not f then
 		return
 	end
 	local war = f.Guerres:FindFirstChild(pairKey(a, b))
 	if war then
+		local declarer = war:GetAttribute("Declarant")
 		war:Destroy()
+		local length = duration or Diplomacy.truceDuration
 		local truce = f.Treves:FindFirstChild(pairKey(a, b)) or Instance.new("Folder")
 		truce.Name = pairKey(a, b)
 		truce:SetAttribute("A", if a < b then a else b)
 		truce:SetAttribute("B", if a < b then b else a)
-		truce:SetAttribute("Fin", now() + Diplomacy.truceDuration)
+		truce:SetAttribute("Fin", now() + length)
+		truce:SetAttribute("Reprise", if resume then true else nil)
 		truce.Parent = f.Treves
-		task.delay(Diplomacy.truceDuration + 1, function()
+		task.delay(length + 1, function()
 			local finish = truce:GetAttribute("Fin")
 			if truce.Parent and typeof(finish) == "number" and finish <= now() then
+				local again = truce:GetAttribute("Reprise") == true
 				truce:Destroy()
+				-- trêve finie : la guerre reprend (sauf s'ils sont devenus alliés entre-temps)
+				if again and not DiplomacyService.areAllies(a, b) then
+					setWar(a, b, if typeof(declarer) == "string" then declarer else a)
+				end
 			end
 		end)
 	end
@@ -185,6 +198,35 @@ local function makePeace(a: string, b: string)
 		end
 	end
 	notify(peaceListeners, a, b)
+end
+DiplomacyService.makePeace = makePeace
+
+-- Trêve votée entre les camps de `a` et de `b` : plus d'attaque pendant `duration` secondes, puis
+-- la guerre reprend
+function DiplomacyService.makeTruce(a: string, b: string, duration: number)
+	for _, x in side(a) do
+		for _, y in side(b) do
+			endWar(x, y, duration, true)
+		end
+	end
+end
+
+-- Les deux camps d'une guerre entre `a` et `b` : pays de chaque camp en guerre avec l'autre
+function DiplomacyService.camps(a: string, b: string): ({ string }, { string })
+	local left, right = {}, {}
+	for _, x in side(a) do
+		for _, y in side(b) do
+			if DiplomacyService.atWar(x, y) then
+				if not table.find(left, x) then
+					table.insert(left, x)
+				end
+				if not table.find(right, y) then
+					table.insert(right, y)
+				end
+			end
+		end
+	end
+	return left, right
 end
 
 -- Les membres d'un bloc partagent leurs guerres
@@ -326,7 +368,7 @@ local function close(proposal: Instance, answer: string)
 	end)
 end
 
--- `from` propose une alliance ou la paix à `to`
+-- `from` propose une alliance à `to` (la paix et les trêves se votent : CouncilService)
 function DiplomacyService.propose(from: string, to: unknown, kind: unknown): (boolean, string?)
 	local f = folders
 	if not f then
@@ -335,7 +377,10 @@ function DiplomacyService.propose(from: string, to: unknown, kind: unknown): (bo
 	if typeof(to) ~= "string" or not Countries[to] or to == from then
 		return false, "Pays inconnu."
 	end
-	if kind ~= "Alliance" and kind ~= "Paix" then
+	if kind == "Paix" then
+		return false, "La paix se vote : propose-la au Conseil mondial (onglet Diplomatie)."
+	end
+	if kind ~= "Alliance" then
 		return false, "Proposition inconnue."
 	end
 	local key = `{from}|{to}|{kind}`
@@ -544,9 +589,6 @@ function DiplomacyService.init()
 	end
 	remote("ProposerAlliance", function(countryId: string, target: unknown)
 		return DiplomacyService.propose(countryId, target, "Alliance")
-	end)
-	remote("ProposerPaix", function(countryId: string, target: unknown)
-		return DiplomacyService.propose(countryId, target, "Paix")
 	end)
 	remote("DeclarerGuerre", function(countryId: string, target: unknown)
 		if typeof(target) ~= "string" then

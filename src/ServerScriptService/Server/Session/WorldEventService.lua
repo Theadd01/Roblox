@@ -1,8 +1,10 @@
 --!strict
--- Événements mondiaux aléatoires (Config/WorldEvents) : pendant la partie, un événement toutes les
--- quelques minutes (jamais dans les dernières minutes). Il agit sur le marché, des usines, une région
--- ou un pays, puis il est publié : journal (catégorie « Evenement ») et attributs de EtatMonde
--- pour le bandeau des joueurs : Evenement (titre), EvenementTexte, EvenementHeure.
+-- Événements mondiaux (Config/WorldEvents). Cahier des charges v2, section 1 : un événement est
+-- lancé par un vote au Conseil mondial que propose un joueur (CouncilService -> trigger) ; le
+-- tirage automatique (un toutes les quelques minutes) ne tourne que si WorldEvents.automatic.
+-- Il agit sur le marché, des usines, une région ou un pays, puis il est publié : journal
+-- (catégorie « Evenement ») et attributs de EtatMonde pour le bandeau des joueurs : Evenement
+-- (titre), EvenementTexte, EvenementHeure.
 -- Région sinistrée : attributs « Catastrophe » (heure de fin) et « CatastropheType » de
 -- EtatMonde.Regions.<région> (ProductionService n'y produit plus rien jusque-là).
 -- Usines arrêtées : attributs « ArretJusqua » et « ArretRaison » (lus par FactoryService).
@@ -180,17 +182,33 @@ local function apply(event: any): (string?, { string })
 	return nil, {}
 end
 
-local function trigger()
-	local event = pick()
+local function trigger(chosen: any?): boolean
+	local event = chosen or pick()
 	local text, countries = apply(event)
 	if not text then
-		return
+		return false
 	end
 	NewsService.publish(`{event.icon} {event.title} : {text}`, "Evenement", countries)
 	local state = ReplicatedStorage:WaitForChild("EtatMonde")
 	state:SetAttribute("EvenementTexte", text)
 	state:SetAttribute("EvenementHeure", now())
 	state:SetAttribute("Evenement", `{event.icon} {event.title}`)
+	return true
+end
+
+-- Lance un événement précis (vote adopté au Conseil mondial) ; vrai s'il a eu lieu
+function WorldEventService.trigger(eventId: string): boolean
+	for _, event in WorldEvents.list do
+		if event.id == eventId then
+			local ok, result = pcall(trigger, event)
+			if not ok then
+				warn(`[Événements] {result}`)
+				return false
+			end
+			return result == true
+		end
+	end
+	return false
 end
 
 -- Nouvelle partie : le premier événement attendra de nouveau WorldEvents.firstDelay
@@ -218,7 +236,7 @@ function WorldEventService.start()
 	task.spawn(function()
 		while true do
 			task.wait(5)
-			if MatchState.isRunning() and MatchState.elapsed() >= nextAt and MatchState.timeLeft() > WorldEvents.quietEnd then
+			if WorldEvents.automatic and MatchState.isRunning() and MatchState.elapsed() >= nextAt and MatchState.timeLeft() > WorldEvents.quietEnd then
 				nextAt = MatchState.elapsed() + rng:NextNumber(WorldEvents.interval.min, WorldEvents.interval.max)
 				local ok, err = pcall(trigger)
 				if not ok then

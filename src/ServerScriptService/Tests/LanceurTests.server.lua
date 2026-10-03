@@ -18,6 +18,7 @@ local suites = {
 	{ name = "Population", module = script.Parent:WaitForChild("Population.spec") },
 	{ name = "Bâtiments", module = script.Parent:WaitForChild("Buildings.spec") },
 	{ name = "Recherche", module = script.Parent:WaitForChild("Research.spec") },
+	{ name = "Votes", module = script.Parent:WaitForChild("Votes.spec") },
 }
 
 for _, suite in suites do

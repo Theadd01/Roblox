@@ -1,7 +1,9 @@
 --!strict
--- Événements mondiaux aléatoires (voir server/Session/WorldEventService) : un toutes les 6 à
--- 9 minutes environ, jamais dans les dernières minutes de la partie. Ils touchent le marché, des
--- usines, une région ou un pays, et sont annoncés à tous (bandeau et journal).
+-- Événements mondiaux (voir server/Session/WorldEventService). Cahier des charges v2, section 1 :
+-- seul un joueur lance un événement ; il le propose au Conseil mondial (ceux marqués `proposable`)
+-- et les pays votent (CouncilService). Le tirage automatique (un toutes les 6 à 9 minutes) est
+-- coupé : `automatic = false` (le remettre à true le rallume). Ils touchent le marché, des usines,
+-- une région ou un pays, et sont annoncés à tous (bandeau et journal).
 --   market    : chocs sur les prix (shocks : ressource -> facteur ; « all » = toutes)
 --   factories : les usines de `countries` pays s'arrêtent `duration` secondes (immunité : tech)
 --   disaster  : une région ne produit plus pendant `duration` secondes ; stabilité et miliciens
@@ -22,10 +24,12 @@ export type Event = {
 	stability: number?,
 	organisation: number?, -- part de l'organisation qui reste aux divisions de la région (catastrophe)
 	amount: number?, -- découverte : quantité
+	proposable: boolean?, -- un joueur peut le proposer au Conseil mondial
 }
 
 local WorldEvents = {}
 
+WorldEvents.automatic = false -- tirage automatique : coupé (seuls les joueurs lancent un événement)
 WorldEvents.firstDelay = 8 * 60 -- secondes de partie avant le premier événement
 WorldEvents.interval = { min = 6 * 60, max = 9 * 60 }
 WorldEvents.quietEnd = 3 * 60 -- aucun événement dans les 3 dernières minutes
@@ -33,6 +37,7 @@ WorldEvents.quietEnd = 3 * 60 -- aucun événement dans les 3 dernières minutes
 WorldEvents.list = {
 	{
 		id = "CriseEnergetique",
+		proposable = true,
 		weight = 2,
 		icon = "⚡",
 		title = "Crise énergétique",
@@ -42,6 +47,7 @@ WorldEvents.list = {
 	},
 	{
 		id = "Krach",
+		proposable = true,
 		weight = 1,
 		icon = "📉",
 		title = "Krach boursier",
@@ -51,6 +57,7 @@ WorldEvents.list = {
 	},
 	{
 		id = "RecolteRecord",
+		proposable = true,
 		weight = 1,
 		icon = "🌾",
 		title = "Récolte record",
@@ -60,6 +67,7 @@ WorldEvents.list = {
 	},
 	{
 		id = "Cyberattaque",
+		proposable = true,
 		weight = 2,
 		icon = "💻",
 		title = "Cyberattaque mondiale",
@@ -72,6 +80,7 @@ WorldEvents.list = {
 	},
 	{
 		id = "Greve",
+		proposable = true,
 		weight = 2,
 		icon = "🪧",
 		title = "Grève dans les usines",

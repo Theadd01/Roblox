@@ -90,7 +90,7 @@ ProductionService.start()
 -- IA des pays sans joueur : produire, vendre ses surplus, acheter ses manques
 AIService.start()
 BalanceService.start() -- leader de la partie (les IA se coalisent contre lui)
-CouncilService.start() -- Conseil mondial : un vote toutes les 15 minutes
+CouncilService.start() -- Conseil mondial : votes proposés par les joueurs (trêves, paix, résolutions, événements)
 DilemmaService.start() -- dilemmes de dirigeant (cartes à choix) et réputation
 EspionageService.init() -- espionnage : révéler une région, saboter une usine
 ExileService.start() -- gouvernements en exil et résistance
@@ -99,7 +99,8 @@ StatsService.start() -- statistiques de la partie (objectifs, écran de fin)
 ObjectivesService.start() -- objectifs nationaux des pays des joueurs
 MatchService.start() -- partie de 75 minutes : phases, classement final, puis nouvelle partie
 DailyMissions.start() -- missions quotidiennes (expérience de compte)
-WorldEventService.start() -- événements mondiaux aléatoires (crises, grèves, catastrophes...)
+WorldEventService.start() -- événements mondiaux (lancés par un vote proposé par un joueur)
+CouncilService.setEventHandler(WorldEventService.trigger) -- événement adopté au Conseil : il a lieu
 PrivateChat.init() -- discussions privées entre dirigeants (chat Roblox filtré)
 AccountService.start() -- comptes sauvegardés : succès, titres, parties, réglages
 Achievements.start() -- détection des succès

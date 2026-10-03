@@ -86,7 +86,7 @@ end
 -- Divisions présentes dans une région (dans l'ordre de création)
 function Divisions.inRegion(regionId: string): { Instance }
 	local list = {}
-	for d in byRegion[regionId] or {} do
+	for d in pairs(byRegion[regionId] or {}) do
 		if d.Parent then
 			table.insert(list, d)
 		end
@@ -100,7 +100,7 @@ end
 -- Divisions présentes dans une région, sans tri (plus rapide : pour les calculs de l'IA)
 function Divisions.listIn(regionId: string): { Instance }
 	local list = {}
-	for d in byRegion[regionId] or {} do
+	for d in pairs(byRegion[regionId] or {}) do
 		if d.Parent then
 			table.insert(list, d)
 		end
@@ -119,12 +119,12 @@ end
 -- en route vers elle. Les troupes des généraux n'en prennent pas (cahier des charges v2, 5.4).
 function Divisions.occupancy(regionId: string): number
 	local count = 0
-	for d in byRegion[regionId] or {} do
+	for d in pairs(byRegion[regionId] or {}) do
 		if d.Parent and d:GetAttribute("Destination") == "" and not Divisions.isAbsorbed(d) then
 			count += 1
 		end
 	end
-	for d in arriving[regionId] or {} do
+	for d in pairs(arriving[regionId] or {}) do
 		if d.Parent and not Divisions.isAbsorbed(d) then
 			count += 1
 		end

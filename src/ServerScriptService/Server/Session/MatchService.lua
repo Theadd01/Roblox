@@ -106,7 +106,7 @@ local function enterPhase(index: number)
 	s:SetAttribute("Phase", index)
 	local phase = Match.phases[index]
 	NewsService.publish(`{phase.icon} Phase {index} : {phase.name} — {phase.text}`, "Partie", {})
-	if phase.crisis and #Match.crises > 0 then
+	if phase.crisis and Match.automaticCrisis and #Match.crises > 0 then
 		local crisis = Match.crises[rng:NextInteger(1, #Match.crises)]
 		MarketService.shock(crisis.resource, crisis.factor)
 		s:SetAttribute("Crise", crisis.title)
