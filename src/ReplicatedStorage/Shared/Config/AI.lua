@@ -70,7 +70,7 @@ local AI = {
 	fortifyDanger = 1.3, -- fortifie une région frontalière quand l'ennemi en face est 1,3 fois plus fort
 
 	-- Diplomatie (voir DiplomacyAI) : envie de s'allier (0 à 1). L'IA ne propose jamais la paix, une
-	-- trêve ni un événement : elle vote sur ce que proposent les joueurs (VoteService, Config/Votes)
+	-- trêve ni un événement : elle vote sur ce que proposent les joueurs (CouncilService, CouncilAI, Config/Council)
 	allianceWillingness = 0.45,
 	peaceWillingness = 0.45, -- pour son vote sur une paix ou une trêve proposée par un joueur
 	proposalInterval = 120, -- secondes entre deux propositions d'alliance d'un même pays IA

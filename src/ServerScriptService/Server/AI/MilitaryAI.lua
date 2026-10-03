@@ -3,7 +3,7 @@
 -- utilise exactement les outils du joueur (recruter des divisions, acheter des généraux et leur
 -- rattacher des troupes, attaquer une région depuis toutes ses régions voisines, lancer un général
 -- en offensive continue, fortifier), sans tricher sur les règles. Elle ne propose jamais de trêve,
--- de paix ni d'événement mondial (seuls les joueurs le font : VoteService).
+-- de paix ni d'événement mondial (seuls les joueurs le font : CouncilService).
 --   housekeeping (à chaque tour, sans coût) : ses divisions libres vont vers la région frontalière
 --     la plus menacée ; ses généraux reçoivent les divisions en surplus (une garnison reste sur
 --     chaque région frontalière) et choisissent leurs bonus de niveau ;
